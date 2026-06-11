@@ -1,0 +1,906 @@
+"""
+微电网可视化前端 v2 — SCADA风格单线图 + 动态能流动画 + 点击详情 + 日历/昼夜
+输出: figures/microgrid_frontend.html
+"""
+import numpy as np
+import json
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(__file__))
+
+from config import (
+    SERVICE_AREA_CONFIG, PV_COEFF, WEATHER_COEFF,
+    TOU_PRICE_VALUES, get_season, get_tou_price_array,
+    FEED_IN_PRICE, CARBON_FACTOR_GRID, STATION_AUX_DAILY_KWH,
+    WEATHER_CHARGING_COEFF, WEATHER_BUILDING_COEFF, HOLIDAY_TOU_FACTOR,
+    BUILDING_LOAD,
+)
+from calendar_utils import CalendarContext
+from mc_charging_load import MonteCarloChargingSimulator
+from capacity_optimization import MicrogridOptimizer
+
+OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'figures')
+SEED = 42
+PV_CAP = 1231
+ESS_CAP = 2000
+ESS_POW = 1000
+
+DEVICE_SPECS = {
+    'pv_modules': 1986, 'pv_inverters': 5, 'pv_inverter_kw': 225,
+    'ess_cabinets': 10, 'ess_cabinet_kwh': 215, 'ess_pcs_modules': 4,
+    'ev_120kw': 16, 'ev_480kw': 2,
+    'transformer_kva': 2500, 'svg_kvar': 50,
+    'building_peak_kw': 147,
+}
+
+
+def run_simulation(pv_cap=PV_CAP, ess_cap=ESS_CAP, ess_pow=ESS_POW):
+    calendar_ctx = CalendarContext(seed=SEED)
+    mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
+    mc_scenarios = mc_sim.simulate_all_scenarios(n_runs=2000)
+    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
+                              calendar_ctx=calendar_ctx)
+    opt.pv_capacity = pv_cap
+    opt.ess_capacity = ess_cap
+    opt.ess_power = ess_pow
+    pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+
+    display_day = None
+    for d in range(180, 250):
+        if (calendar_ctx.day_types[d] == 'workday' and
+            calendar_ctx.weather_seq[d] == 'clear' and
+            calendar_ctx.month_of_day[d] in [6, 7, 8]):
+            display_day = d
+            break
+    if display_day is None:
+        display_day = 200
+
+    season = seasons_seq[display_day * 24]
+    pv_profile = pv_coeff_seq[display_day * 24:(display_day + 1) * 24] * pv_cap
+    load_profile = load_seq[display_day * 24:(display_day + 1) * 24]
+    tou_hourly = tou_seq[display_day * 24:(display_day + 1) * 24]
+    result = opt.simulate_daily_operation(pv_profile, load_profile, season,
+                                           tou_prices=tou_hourly)
+
+    hourly_data = []
+    for h in range(24):
+        hourly_data.append({
+            'h': h,
+            'pv': round(float(pv_profile[h]), 1),
+            'load': round(float(load_profile[h]), 1),
+            'grid_import': round(float(result['grid_import'][h]), 1),
+            'grid_export': round(float(result['grid_export'][h]), 1),
+            'ess_ch': round(float(result['ess_charge'][h]), 1),
+            'ess_disch': round(float(result['ess_discharge'][h]), 1),
+            'soc': round(float(result['soc_curve'][h]), 3),
+            'tou': round(float(tou_hourly[h]), 3),
+            'net': round(float(pv_profile[h]) - float(load_profile[h]), 1),
+            'loss': round(float(result['loss_of_load'][h]), 1),
+        })
+
+    total_pv = float(pv_profile.sum())
+    total_load = float(load_profile.sum())
+    total_grid_import = float(result['grid_import'].sum())
+    total_grid_export = float(result['grid_export'].sum())
+    total_ess_ch = float(result['ess_charge'].sum())
+    total_ess_disch = float(result['ess_discharge'].sum())
+    total_grid_cost = float(np.sum(result['grid_import'] * tou_hourly))
+    self_use = total_pv - total_grid_export
+
+    # 拆分负荷: 充电负荷 vs 建筑负荷 (近似)
+    charging_load_hourly = []
+    building_load_hourly = []
+    for h in range(24):
+        bldg = np.array(BUILDING_LOAD.get(season, BUILDING_LOAD['spring'])) * \
+               (SERVICE_AREA_CONFIG['medium']['peak_building_kw'] / 147.0)
+        bldg_h = float(bldg[h])
+        chg_h = float(load_profile[h]) - bldg_h
+        if chg_h < 0:
+            chg_h = 0
+            bldg_h = float(load_profile[h])
+        charging_load_hourly.append(round(chg_h, 1))
+        building_load_hourly.append(round(bldg_h, 1))
+
+    summary = {
+        'pv_cap': pv_cap, 'ess_cap': ess_cap, 'ess_pow': ess_pow,
+        'display_day': display_day,
+        'total_pv': round(total_pv, 1),
+        'total_load': round(total_load, 1),
+        'total_grid_import': round(total_grid_import, 1),
+        'total_grid_export': round(total_grid_export, 1),
+        'total_ess_ch': round(total_ess_ch, 1),
+        'total_ess_disch': round(total_ess_disch, 1),
+        'total_grid_cost': round(total_grid_cost, 1),
+        'self_sufficiency': round(ssr, 4) if (ssr := self_use / max(total_load, 1)) else 0,
+        'carbon_reduction_t': round(self_use / 1000 * CARBON_FACTOR_GRID, 2),
+    }
+
+    return hourly_data, summary, mc_scenarios, calendar_ctx, charging_load_hourly, building_load_hourly
+
+
+def build_html(hourly_data, summary, calendar_ctx, charging_load_hourly, building_load_hourly):
+    hourly_json = json.dumps(hourly_data, ensure_ascii=False)
+    summary_json = json.dumps(summary, ensure_ascii=False)
+    chg_json = json.dumps(charging_load_hourly, ensure_ascii=False)
+    bldg_json = json.dumps(building_load_hourly, ensure_ascii=False)
+
+    day_idx = summary['display_day']
+    month = calendar_ctx.month_of_day[day_idx]
+    dom = calendar_ctx.day_of_month[day_idx]
+    dow = calendar_ctx.day_of_week[day_idx]
+    day_type = calendar_ctx.day_types[day_idx]
+    weather = calendar_ctx.weather_seq[day_idx]
+    season = get_season(month)
+    dow_names = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
+    dt_labels = {'workday': '工作日', 'weekend': '双休日', 'holiday': '节假日', 'spring_festival': '春运'}
+    weather_labels = {'clear': '晴', 'partly_cloudy': '晴转多云', 'cloudy': '多云', 'overcast': '阴', 'rain': '雨'}
+    season_labels = {'spring': '春季', 'summer': '夏季', 'autumn': '秋季', 'winter': '冬季'}
+    calendar_json = json.dumps({
+        'date': f'2025年{month}月{dom}日',
+        'weekday': dow_names[dow],
+        'day_type': day_type,
+        'day_type_label': dt_labels.get(day_type, day_type),
+        'weather': weather,
+        'weather_label': weather_labels.get(weather, weather),
+        'season': season,
+        'season_label': season_labels.get(season, season),
+        'month': month,
+    }, ensure_ascii=False)
+
+    # 设备详情JSON
+    detail_json = json.dumps({
+        'pv': {
+            'name': '光伏发电系统', 'capacity': f'{PV_CAP} kWp',
+            'specs': [
+                ('组件', '1986块 × 620Wp TOPCon双面'),
+                ('逆变器', '5台 × 225kW 组串式 (华为/阳光)'),
+                ('汇流箱', '10台 APV-M16'),
+                ('支架', '热镀锌车棚 ~6000m²'),
+                ('效率', '22.0% (组件) / 98.5% (逆变器)'),
+                ('衰减', '首年2% + 逐年0.5%'),
+                ('寿命', '组件30年 / 逆变器15年'),
+            ],
+        },
+        'ess': {
+            'name': '储能系统 BESS', 'capacity': f'{ESS_CAP} kWh / {ESS_POW} kW',
+            'specs': [
+                ('电池柜', '10台 × 215kWh LFP方形铝壳'),
+                ('PCS', '4台 × 100kW 双向AC/DC'),
+                ('系统电压', '768V DC'),
+                ('SOC范围', '10% - 90%'),
+                ('RTE效率', '92% (DC侧)'),
+                ('循环寿命', '8,000次 (80%DOD)'),
+                ('日历寿命', '12年'),
+            ],
+        },
+        'ev': {
+            'name': '充电系统 EVSE', 'capacity': '16×120kW + 2×480kW',
+            'specs': [
+                ('快充桩', '16台 × 120kW CCS2'),
+                ('超充堆', '2套 × 480kW 液冷'),
+                ('终端数', '26个充电终端'),
+                ('效率', '94.5% (120kW) / 95.5% (480kW)'),
+                ('通信', 'OCPP 1.6J / 2.0.1'),
+                ('寿命', '10年'),
+            ],
+        },
+        'building': {
+            'name': '建筑负荷', 'capacity': '峰值 147 kW',
+            'specs': [
+                ('照明', '~20 kW'),
+                ('空调', '~60 kW (夏季)'),
+                ('热水', '~15 kW'),
+                ('动力', '~10 kW'),
+                ('办公', '~12 kW'),
+                ('餐饮', '~30 kW'),
+            ],
+        },
+        'svg': {
+            'name': 'SVG无功补偿', 'capacity': '50 kVAR',
+            'specs': [
+                ('类型', '静止无功发生器'),
+                ('补偿', '感性/容性双向连续'),
+                ('响应', '<5ms (全响应<20ms)'),
+                ('谐波', '2-25次 (APF模式可选)'),
+                ('最恶劣工况', '纯建筑负荷 PF=0.85'),
+            ],
+        },
+        'aux': {
+            'name': '站用电/UPS', 'capacity': 'UPS 15kVA',
+            'specs': [
+                ('站用变', 'SCB13-50kVA 10/0.4kV'),
+                ('UPS', '15kVA 在线式 锂电池 30min'),
+                ('直流屏', 'DC 220V 65Ah'),
+                ('日耗电', '~100 kWh'),
+            ],
+        },
+        'transformer': {
+            'name': '箱式变压器', 'capacity': '2×1250 kVA',
+            'specs': [
+                ('型号', 'S20-M-1250/10'),
+                ('电压比', '10±2×2.5%/0.4 kV'),
+                ('联结组', 'Dyn11 · Uk%=6%'),
+                ('效率', '~99.0% (额定)'),
+                ('并网柜', 'ACB 2000A + 防孤岛'),
+                ('寿命', '25年'),
+            ],
+        },
+    }, ensure_ascii=False)
+
+    html = f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>高速服务区光储充微网 - 运行监控</title>
+<style>
+:root {{
+  --bg: #060e18; --panel: #0b1a2e; --border: #15304a;
+  --text: #a0bdd0; --bright: #d8ecf8; --accent: #00c8f0;
+  --pv: #f0a020; --ess-ch: #4090d0; --ess-dis: #60d040;
+  --grid-imp: #e04050; --grid-exp: #30d0b0; --load: #e8e8f0;
+  --busbar: #b0b0b0; --warn: #f08030;
+  --night-bg: #040a14; --day-bg: #060e18;
+}}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','Segoe UI',sans-serif;
+        overflow:hidden; height:100vh; display:flex; flex-direction:column; }}
+.header {{ background:linear-gradient(180deg, #0d2847, #060e18); border-bottom:1px solid var(--border);
+          padding:6px 16px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; }}
+.header h1 {{ font-size:17px; color:var(--accent); font-weight:600; }}
+.header .date-area {{ display:flex; align-items:center; gap:10px; }}
+.date-box {{ background:var(--panel); border:1px solid var(--border); border-radius:6px; padding:4px 10px;
+            display:flex; align-items:center; gap:8px; }}
+.date-box .dtext {{ font-size:13px; color:var(--bright); }}
+.date-box .dsub {{ font-size:10px; color:#5a85a5; }}
+.badge {{ padding:3px 8px; border-radius:4px; font-size:10px; font-weight:600; }}
+.badge.workday {{ background:#1a3020; color:#60d040; border:1px solid #2a5a2a; }}
+.badge.weekend {{ background:#1a2a30; color:#40a0d0; border:1px solid #2a4a5a; }}
+.badge.holiday {{ background:#301a20; color:#f08080; border:1px solid #5a2a2a; }}
+.badge.spring_festival {{ background:#302010; color:#f0a040; border:1px solid #5a3a1a; }}
+.daynight {{ font-size:18px; }}
+.top-bar {{ display:flex; gap:6px; padding:5px 16px; flex-shrink:0; flex-wrap:wrap; }}
+.metric {{ background:var(--panel); border:1px solid var(--border); border-radius:5px;
+          padding:4px 10px; text-align:center; min-width:80px; }}
+.metric .val {{ font-size:18px; font-weight:700; color:var(--accent); line-height:1.2; }}
+.metric .lbl {{ font-size:9px; color:#4a7595; letter-spacing:0.5px; }}
+.metric.pv .val {{ color:var(--pv); }} .metric.load .val {{ color:var(--load); }}
+.metric.ess .val {{ color:var(--ess-dis); }} .metric.grid .val {{ color:var(--grid-imp); }}
+
+.slider-row {{ display:flex; align-items:center; gap:8px; padding:3px 16px; flex-shrink:0; }}
+.slider-row input[type=range] {{ flex:1; accent-color:var(--accent); height:4px; }}
+.slider-row .tlabel {{ font-size:13px; color:var(--accent); min-width:60px; text-align:center; font-weight:600; }}
+.slider-row button {{ background:var(--accent); border:none; color:#000; padding:3px 12px;
+  border-radius:4px; cursor:pointer; font-weight:600; font-size:11px; }}
+.slider-row button:hover {{ background:#30d8ff; }}
+
+.main {{ display:flex; gap:8px; padding:0 16px 6px; flex:1; min-height:0; }}
+.sld {{ flex:1.5; background:var(--panel); border:1px solid var(--border); border-radius:8px;
+        position:relative; overflow:hidden; cursor:default; }}
+.sld svg {{ width:100%; height:100%; }}
+.right {{ flex:0.7; display:flex; flex-direction:column; gap:6px; }}
+.chart {{ background:var(--panel); border:1px solid var(--border); border-radius:8px;
+         padding:6px; flex:1; position:relative; min-height:0; }}
+.chart h3 {{ font-size:11px; color:var(--accent); margin-bottom:3px; font-weight:400; }}
+.chart canvas {{ width:100%; height:calc(100% - 20px); }}
+
+.summary-grid {{ display:grid; grid-template-columns:1fr 1fr; gap:4px; }}
+.summary-grid .sg {{ background:rgba(255,255,255,0.03); border:1px solid var(--border);
+  border-radius:4px; padding:5px 8px; text-align:center; }}
+.summary-grid .sg .sv {{ font-size:15px; font-weight:700; }}
+.summary-grid .sg .sl {{ font-size:8px; color:#4a7595; }}
+
+.footer {{ text-align:center; padding:3px; color:#2a4a6a; font-size:8px;
+          border-top:1px solid var(--border); flex-shrink:0; }}
+
+/* Detail overlay */
+.overlay {{ position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7);
+            z-index:1000; display:none; justify-content:center; align-items:center; }}
+.overlay.show {{ display:flex; }}
+.overlay .dlg {{ background:var(--panel); border:2px solid var(--accent); border-radius:10px;
+  padding:16px 20px; max-width:400px; width:90%; }}
+.overlay .dlg h2 {{ font-size:16px; color:var(--accent); margin-bottom:4px; }}
+.overlay .dlg .cap {{ font-size:12px; color:var(--warn); margin-bottom:10px; }}
+.overlay .dlg .spec {{ display:grid; grid-template-columns:1fr 2fr; gap:4px 8px; font-size:11px; }}
+.overlay .dlg .spec .sk {{ color:#6a8aaa; text-align:right; }}
+.overlay .dlg .spec .sv {{ color:var(--bright); }}
+.overlay .dlg .close {{ float:right; background:none; border:1px solid var(--border); color:var(--text);
+  padding:2px 10px; border-radius:4px; cursor:pointer; font-size:14px; }}
+.overlay .dlg .close:hover {{ background:var(--border); }}
+.overlay .dlg .live {{ background:rgba(0,200,240,0.1); border:1px solid var(--accent); border-radius:6px;
+  padding:8px; margin-top:8px; font-size:12px; text-align:center; }}
+
+/* SVG clickable */
+.svg-clickable {{ cursor:pointer; }}
+.svg-clickable:hover {{ filter:brightness(1.3); }}
+
+@keyframes dashFlow {{ from {{ stroke-dashoffset:20; }} to {{ stroke-dashoffset:0; }} }}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>高速公路服务区光储充微网 - 运行监控</h1>
+  <div class="date-area">
+    <div class="date-box">
+      <span class="daynight" id="dayNightIcon">☀️</span>
+      <div>
+        <div class="dtext" id="dateText">--</div>
+        <div class="dsub" id="dateSub">--</div>
+      </div>
+    </div>
+    <span class="badge" id="dayTypeBadge">工作日</span>
+  </div>
+</div>
+
+<div class="top-bar">
+  <div class="metric pv"><div class="val" id="mPV">-</div><div class="lbl">光伏 kW</div></div>
+  <div class="metric load"><div class="val" id="mLoad">-</div><div class="lbl">总负荷 kW</div></div>
+  <div class="metric ess"><div class="val" id="mSOC">-</div><div class="lbl">SOC %</div></div>
+  <div class="metric"><div class="val" id="mNet">-</div><div class="lbl">净负荷 kW</div></div>
+  <div class="metric grid"><div class="val" id="mGrid">-</div><div class="lbl">电网交互 kW</div></div>
+  <div class="metric"><div class="val" id="mTOU">-</div><div class="lbl">电价 ￥/kWh</div></div>
+  <div class="metric"><div class="val" id="mFlow">-</div><div class="lbl">ESS状态</div></div>
+  <div class="metric"><div class="val" style="font-size:14px;" id="mTime">12:00</div><div class="lbl">时刻</div></div>
+</div>
+
+<div class="slider-row">
+  <span style="font-size:10px;color:var(--accent);">00:00</span>
+  <input type="range" id="timeSlider" min="0" max="23" value="12" step="1">
+  <span style="font-size:10px;color:var(--accent);">23:00</span>
+  <span class="tlabel" id="timeLabel">12:00</span>
+  <button onclick="toggleAutoPlay()" id="playBtn">▶ 播放</button>
+  <span style="font-size:9px;color:#4a7595;">← → 切换 | 空格 播放 | 点击组件看详情</span>
+</div>
+
+<div class="main">
+  <div class="sld" id="sldPanel">
+    <svg viewBox="0 0 1200 560" xmlns="http://www.w3.org/2000/svg" id="sldSvg">
+      <defs>
+        <filter id="glow"><feGaussianBlur stdDeviation="2"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="glowS"><feGaussianBlur stdDeviation="4"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <linearGradient id="busGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#e0e0e0"/><stop offset="40%" stop-color="#d0d0d0"/><stop offset="100%" stop-color="#707070"/>
+        </linearGradient>
+        <linearGradient id="gridGrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#142840"/><stop offset="100%" stop-color="#1a4060"/>
+        </linearGradient>
+      </defs>
+
+      <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+        <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#0d2040" stroke-width="0.3"/>
+      </pattern>
+      <rect x="0" y="0" width="1200" height="560" fill="url(#grid)" opacity="0.5"/>
+
+      <!-- 大电网 -->
+      <rect x="460" y="5" width="240" height="28" rx="5" fill="url(#gridGrad)" stroke="#3080b0" stroke-width="1.5"/>
+      <text x="580" y="24" text-anchor="middle" fill="#d8ecf8" font-size="13" font-weight="600">大电网 10kV</text>
+      <line x1="500" y1="6" x2="500" y2="1" stroke="#4090c0" stroke-width="2"/>
+      <line x1="580" y1="6" x2="580" y2="1" stroke="#4090c0" stroke-width="2"/>
+      <line x1="660" y1="6" x2="660" y2="1" stroke="#4090c0" stroke-width="2"/>
+
+      <rect x="500" y="35" width="160" height="15" rx="3" fill="none" stroke="#407090" stroke-width="1.5"/>
+      <text x="580" y="46" text-anchor="middle" fill="#5080a0" font-size="9">进线柜 + 计量CT/PT</text>
+      <line x1="580" y1="33" x2="580" y2="35" stroke="#6090b0" stroke-width="2.5"/>
+
+      <g class="svg-clickable" onclick="showDetail('transformer')">
+        <rect x="470" y="52" width="220" height="52" rx="7" fill="#0f2038" stroke="#4080b0" stroke-width="2"/>
+        <text x="580" y="70" text-anchor="middle" fill="#c0ddf0" font-size="13" font-weight="600">箱式变压器</text>
+        <text x="580" y="86" text-anchor="middle" fill="#6090b0" font-size="10">2 × 1250 kVA · Dyn11 · 10kV/0.4kV · Uk%=6%</text>
+        <text x="580" y="99" text-anchor="middle" fill="#407090" font-size="8">效率 99% | 并网柜 ACB 2000A + 防孤岛保护 | 寿命 25年</text>
+      </g>
+      <line x1="580" y1="104" x2="580" y2="128" stroke="#a0b0c0" stroke-width="3.5"/>
+
+      <!-- 400V 交流母线 -->
+      <rect x="5" y="128" width="1190" height="20" rx="3" fill="url(#busGrad)" stroke="#808080" stroke-width="1.2"/>
+      <text x="600" y="142" text-anchor="middle" fill="#0a1628" font-size="12" font-weight="700">400V 交流母线 (铜排 · 三相四线)</text>
+
+      <!-- ====== 6个子系统面板: w=175, gap=28, 起点x=20 ====== -->
+      <!-- 总宽: 6×175 + 5×28 = 1190, 起点20 → 完美适配1200 -->
+
+      <!-- PV (x=20) -->
+      <g class="svg-clickable" onclick="showDetail('pv')">
+        <rect x="20" y="165" width="175" height="180" rx="8" fill="#0c1808" stroke="#f0a020" stroke-width="2"/>
+        <rect x="20" y="165" width="175" height="28" rx="8" fill="#f0a020" opacity="0.15"/>
+        <text x="107" y="184" text-anchor="middle" fill="#f0b840" font-size="12" font-weight="600">☀ 光伏发电</text>
+        <text x="107" y="200" text-anchor="middle" fill="#80a060" font-size="9">{PV_CAP} kWp</text>
+        <g transform="translate(32,210)">
+          <rect x="0" y="0" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="26" y="0" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="52" y="0" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="78" y="0" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="13" y="22" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="39" y="22" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <rect x="65" y="22" width="22" height="18" rx="1" fill="#1a3010" stroke="#408020" stroke-width="0.8"/>
+          <text x="52" y="15" text-anchor="middle" fill="#408020" font-size="8">×1986块</text>
+        </g>
+        <g transform="translate(32,258)">
+          <rect x="0" y="0" width="45" height="18" rx="3" fill="#102008" stroke="#60a030" stroke-width="1"/>
+          <text x="22" y="13" text-anchor="middle" fill="#80c060" font-size="8">INV×5</text>
+          <rect x="52" y="0" width="48" height="18" rx="3" fill="#102008" stroke="#60a030" stroke-width="1"/>
+          <text x="76" y="13" text-anchor="middle" fill="#80c060" font-size="8">225kW</text>
+        </g>
+        <rect x="32" y="284" width="150" height="24" rx="5" fill="#0a1408" stroke="#f0a020" stroke-width="1.5"/>
+        <text x="107" y="301" text-anchor="middle" fill="#f0b840" font-size="12" font-weight="700" id="svgPvPower">0 kW</text>
+        <text x="107" y="320" text-anchor="middle" fill="#608040" font-size="9" id="svgPvDetail">日发电: -- kWh</text>
+      </g>
+      <line x1="107" y1="148" x2="107" y2="165" stroke="#f0a020" stroke-width="3"/>
+
+      <!-- ESS (x=223) -->
+      <g class="svg-clickable" onclick="showDetail('ess')">
+        <rect x="223" y="165" width="175" height="180" rx="8" fill="#081220" stroke="#4090d0" stroke-width="2"/>
+        <rect x="223" y="165" width="175" height="28" rx="8" fill="#4090d0" opacity="0.1"/>
+        <text x="310" y="184" text-anchor="middle" fill="#50b0f0" font-size="12" font-weight="600">🔋 储能系统</text>
+        <text x="310" y="200" text-anchor="middle" fill="#5080b0" font-size="9">{ESS_CAP} kWh / {ESS_POW} kW</text>
+        <g transform="translate(235,210)">
+          <rect x="0" y="0" width="26" height="34" rx="2" fill="#0a1624" stroke="#3060a0" stroke-width="1"/>
+          <rect x="30" y="0" width="26" height="34" rx="2" fill="#0a1624" stroke="#3060a0" stroke-width="1"/>
+          <rect x="60" y="0" width="26" height="34" rx="2" fill="#0a1624" stroke="#3060a0" stroke-width="1"/>
+          <rect x="90" y="0" width="26" height="34" rx="2" fill="#0a1624" stroke="#3060a0" stroke-width="1"/>
+          <text x="60" y="46" text-anchor="middle" fill="#4080b0" font-size="8">10×215kWh LFP</text>
+        </g>
+        <g transform="translate(235,265)">
+          <rect x="0" y="0" width="22" height="14" rx="2" fill="#0a1624" stroke="#4080b0" stroke-width="1"/>
+          <text x="11" y="10" text-anchor="middle" fill="#60a0d0" font-size="7">PCS1</text>
+          <rect x="26" y="0" width="22" height="14" rx="2" fill="#0a1624" stroke="#4080b0" stroke-width="1"/>
+          <text x="37" y="10" text-anchor="middle" fill="#60a0d0" font-size="7">PCS2</text>
+          <rect x="52" y="0" width="22" height="14" rx="2" fill="#0a1624" stroke="#4080b0" stroke-width="1"/>
+          <text x="63" y="10" text-anchor="middle" fill="#60a0d0" font-size="7">PCS3</text>
+          <rect x="78" y="0" width="22" height="14" rx="2" fill="#0a1624" stroke="#4080b0" stroke-width="1"/>
+          <text x="89" y="10" text-anchor="middle" fill="#60a0d0" font-size="7">PCS4</text>
+        </g>
+        <!-- SOC bar -->
+        <rect x="238" y="284" width="60" height="8" rx="4" fill="#0a1624" stroke="#3060a0" stroke-width="0.8"/>
+        <rect x="238" y="284" width="30" height="8" rx="4" fill="#40a050" id="svgSocBar"/>
+        <text x="305" y="292" text-anchor="middle" fill="#a0d0a0" font-size="8" id="svgSocText">50%</text>
+        <rect x="235" y="298" width="150" height="24" rx="5" fill="#0a1220" stroke="#4090d0" stroke-width="1.5"/>
+        <text x="310" y="315" text-anchor="middle" fill="#50b0f0" font-size="12" font-weight="700" id="svgEssPower">0 kW</text>
+        <text x="310" y="334" text-anchor="middle" fill="#4070a0" font-size="9" id="svgEssDetail">日循环: -- 次</text>
+      </g>
+      <line x1="310" y1="148" x2="310" y2="165" stroke="#4090d0" stroke-width="3"/>
+
+      <!-- EV (x=426) -->
+      <g class="svg-clickable" onclick="showDetail('ev')">
+        <rect x="426" y="165" width="175" height="180" rx="8" fill="#100a0c" stroke="#e04050" stroke-width="2"/>
+        <rect x="426" y="165" width="175" height="28" rx="8" fill="#e04050" opacity="0.1"/>
+        <text x="513" y="184" text-anchor="middle" fill="#f06878" font-size="12" font-weight="600">⚡ 充电系统</text>
+        <text x="513" y="200" text-anchor="middle" fill="#b06060" font-size="9">26终端</text>
+        <g transform="translate(438,210)">
+          <rect x="0" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <rect x="18" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <rect x="36" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <rect x="54" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <rect x="72" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <rect x="90" y="0" width="15" height="28" rx="2" fill="#180a10" stroke="#803040" stroke-width="0.8"/>
+          <text x="52" y="40" text-anchor="middle" fill="#804050" font-size="8">120kW ×16</text>
+          <rect x="0" y="48" width="50" height="18" rx="3" fill="#200a10" stroke="#a04050" stroke-width="1"/>
+          <text x="25" y="61" text-anchor="middle" fill="#d06070" font-size="8">480kW×2</text>
+          <rect x="56" y="48" width="50" height="18" rx="3" fill="#200a10" stroke="#a04050" stroke-width="1"/>
+          <text x="81" y="61" text-anchor="middle" fill="#d06070" font-size="8">液冷超充</text>
+        </g>
+        <rect x="438" y="298" width="150" height="24" rx="5" fill="#140a10" stroke="#e04050" stroke-width="1.5"/>
+        <text x="513" y="315" text-anchor="middle" fill="#f06878" font-size="12" font-weight="700" id="svgEvPower">0 kW</text>
+      </g>
+      <line x1="513" y1="148" x2="513" y2="165" stroke="#e04050" stroke-width="3"/>
+
+      <!-- 建筑负荷 (x=629) -->
+      <g class="svg-clickable" onclick="showDetail('building')">
+        <rect x="629" y="165" width="175" height="180" rx="8" fill="#101218" stroke="#8090a0" stroke-width="2"/>
+        <rect x="629" y="165" width="175" height="28" rx="8" fill="#8090a0" opacity="0.1"/>
+        <text x="716" y="184" text-anchor="middle" fill="#b0c0d0" font-size="12" font-weight="600">🏠 建筑负荷</text>
+        <text x="716" y="200" text-anchor="middle" fill="#708090" font-size="9">峰值 {DEVICE_SPECS['building_peak_kw']} kW</text>
+        <g transform="translate(640,210)">
+          <rect x="0" y="0" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="17" y="12" text-anchor="middle" fill="#8090a0" font-size="7">照明</text>
+          <rect x="39" y="0" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="56" y="12" text-anchor="middle" fill="#8090a0" font-size="7">空调</text>
+          <rect x="78" y="0" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="95" y="12" text-anchor="middle" fill="#8090a0" font-size="7">热水</text>
+          <rect x="0" y="20" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="17" y="32" text-anchor="middle" fill="#8090a0" font-size="7">动力</text>
+          <rect x="39" y="20" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="56" y="32" text-anchor="middle" fill="#8090a0" font-size="7">办公</text>
+          <rect x="78" y="20" width="35" height="16" rx="2" fill="#141820" stroke="#607080" stroke-width="0.8"/>
+          <text x="95" y="32" text-anchor="middle" fill="#8090a0" font-size="7">餐饮</text>
+          <rect x="0" y="42" width="113" height="16" rx="2" fill="#1a1820" stroke="#706070" stroke-width="0.8"/>
+          <text x="56" y="53" text-anchor="middle" fill="#908090" font-size="7">🔌 充电负荷 (独立计量)</text>
+        </g>
+        <rect x="641" y="278" width="150" height="24" rx="5" fill="#121420" stroke="#8090a0" stroke-width="1.5"/>
+        <text x="716" y="295" text-anchor="middle" fill="#b0c0d0" font-size="12" font-weight="700" id="svgBldPower">0 kW</text>
+        <text x="716" y="316" text-anchor="middle" fill="#607080" font-size="9" id="svgBldDetail">充电: 0 | 建筑: 0 kW</text>
+      </g>
+      <line x1="716" y1="148" x2="716" y2="165" stroke="#8090a0" stroke-width="3"/>
+
+      <!-- SVG (x=832) -->
+      <g class="svg-clickable" onclick="showDetail('svg')">
+        <rect x="832" y="165" width="175" height="180" rx="8" fill="#0a1620" stroke="#50a0c0" stroke-width="2"/>
+        <rect x="832" y="165" width="175" height="28" rx="8" fill="#50a0c0" opacity="0.08"/>
+        <text x="919" y="184" text-anchor="middle" fill="#60c0e0" font-size="12" font-weight="600">SVG 无功补偿</text>
+        <text x="919" y="200" text-anchor="middle" fill="#4080a0" font-size="9">{DEVICE_SPECS['svg_kvar']} kVAR</text>
+        <g transform="translate(860,212)">
+          <rect x="0" y="0" width="50" height="30" rx="4" fill="#0a1620" stroke="#4080a0" stroke-width="1.5"/>
+          <text x="25" y="18" text-anchor="middle" fill="#60c0e0" font-size="14" font-weight="700">50</text>
+          <text x="25" y="28" text-anchor="middle" fill="#4080a0" font-size="7">kVAR</text>
+          <text x="60" y="12" fill="#4080a0" font-size="8">响应&lt;5ms</text>
+          <text x="60" y="24" fill="#306080" font-size="7">全响应&lt;20ms</text>
+        </g>
+        <g transform="translate(860,255)">
+          <text x="25" y="10" text-anchor="middle" fill="#5090b0" font-size="9">四象限运行</text>
+          <text x="25" y="22" text-anchor="middle" fill="#306080" font-size="7">感/容双向连续</text>
+        </g>
+        <rect x="845" y="298" width="150" height="24" rx="5" fill="#0a1420" stroke="#50a0c0" stroke-width="1.5"/>
+        <text x="920" y="315" text-anchor="middle" fill="#60c0e0" font-size="11" font-weight="700" id="svgSvgStatus">待机中</text>
+        <text x="920" y="334" text-anchor="middle" fill="#306080" font-size="8">纯建筑PF=0.85时启动</text>
+      </g>
+      <line x1="919" y1="148" x2="919" y2="165" stroke="#50a0c0" stroke-width="2"/>
+
+      <!-- 站用电 (x=1035) -->
+      <g class="svg-clickable" onclick="showDetail('aux')">
+        <rect x="1035" y="165" width="145" height="180" rx="8" fill="#0e1016" stroke="#607080" stroke-width="2"/>
+        <rect x="1035" y="165" width="145" height="28" rx="8" fill="#607080" opacity="0.08"/>
+        <text x="1107" y="184" text-anchor="middle" fill="#90a0b0" font-size="12" font-weight="600">站用电/UPS</text>
+        <text x="1107" y="200" text-anchor="middle" fill="#506070" font-size="9">保障电源</text>
+        <g transform="translate(1050,210)">
+          <rect x="0" y="0" width="55" height="22" rx="3" fill="#101218" stroke="#506070" stroke-width="1"/>
+          <text x="27" y="14" text-anchor="middle" fill="#8090a0" font-size="8">UPS 15kVA</text>
+          <rect x="0" y="26" width="55" height="22" rx="3" fill="#101218" stroke="#506070" stroke-width="1"/>
+          <text x="27" y="40" text-anchor="middle" fill="#708080" font-size="8">DC屏 220V</text>
+          <rect x="0" y="52" width="55" height="22" rx="3" fill="#101218" stroke="#506070" stroke-width="1"/>
+          <text x="27" y="66" text-anchor="middle" fill="#708080" font-size="8">站用变50kVA</text>
+        </g>
+        <rect x="1048" y="298" width="120" height="24" rx="5" fill="#0e1018" stroke="#607080" stroke-width="1.5"/>
+        <text x="1108" y="315" text-anchor="middle" fill="#90a0b0" font-size="11" font-weight="700">~100 kWh/天</text>
+      </g>
+      <line x1="1107" y1="148" x2="1107" y2="165" stroke="#607080" stroke-width="2"/>
+
+      <!-- === 能流粒子 === -->
+      <g id="particles">
+        <circle cx="0" cy="0" r="5" fill="#f0a020" filter="url(#glowS)" id="dotPv" opacity="0"/>
+        <circle cx="0" cy="0" r="5" fill="#4090d0" filter="url(#glowS)" id="dotEss" opacity="0"/>
+        <circle cx="0" cy="0" r="5" fill="#e04050" filter="url(#glowS)" id="dotEv" opacity="0"/>
+        <circle cx="0" cy="0" r="5" fill="#b0c0d0" filter="url(#glowS)" id="dotBld" opacity="0"/>
+        <circle cx="0" cy="0" r="6" fill="#d0f0ff" filter="url(#glowS)" id="dotGrid" opacity="0"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="right">
+    <div class="chart"><h3>24h 功率曲线 (kW)</h3><canvas id="powerCanvas"></canvas></div>
+    <div class="chart"><h3>储能SOC · 分时电价</h3><canvas id="socCanvas"></canvas></div>
+    <div class="chart" style="flex:0.5;">
+      <h3>日能量汇总</h3>
+      <div class="summary-grid">
+        <div class="sg"><div class="sv" style="color:var(--pv);" id="sumPV">-</div><div class="sl">光伏 kWh</div></div>
+        <div class="sg"><div class="sv" style="color:var(--load);" id="sumLoad">-</div><div class="sl">用电 kWh</div></div>
+        <div class="sg"><div class="sv" style="color:var(--grid-imp);" id="sumGrid">-</div><div class="sl">网购 kWh</div></div>
+        <div class="sg"><div class="sv" style="color:var(--ess-dis);" id="sumSSR">-</div><div class="sl">自洽率</div></div>
+        <div class="sg"><div class="sv" style="color:var(--warn);" id="sumCost">-</div><div class="sl">网购成本 ￥</div></div>
+        <div class="sg"><div class="sv" style="color:#60d040;" id="sumCarbon">-</div><div class="sl">碳减排 kg</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 详情弹窗 -->
+<div class="overlay" id="detailOverlay" onclick="hideDetail(event)">
+  <div class="dlg" id="detailDlg" onclick="event.stopPropagation()">
+    <button class="close" onclick="hideDetail()">✕</button>
+    <h2 id="detailName">-</h2>
+    <div class="cap" id="detailCap">-</div>
+    <div class="spec" id="detailSpecs"></div>
+    <div class="live" id="detailLive">-</div>
+  </div>
+</div>
+
+<div class="footer">高速公路服务区光储充一体化微网仿真 | MC充电负荷 + PSO容量优化 + TOU调度 + 8760h验证 | 2026</div>
+
+<script>
+const HOURLY = {hourly_json};
+const SUMMARY = {summary_json};
+const CALENDAR = {calendar_json};
+const DETAIL = {detail_json};
+const CHG_LOAD = {chg_json};
+const BLDG_LOAD = {bldg_json};
+const PV_CAP = {PV_CAP};
+const ESS_CAP = {ESS_CAP};
+const ESS_POW = {ESS_POW};
+
+let curH = 12, autoPlay = false, autoTimer = null, flowT = 0, animId = null;
+
+// ===== Canvas charts =====
+function drawPowerChart() {{
+  const c = document.getElementById('powerCanvas');
+  if (!c) return;
+  const r = c.parentElement.getBoundingClientRect();
+  c.width = r.width - 14; c.height = r.height - 24;
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  if (W <= 0 || H <= 0) return;
+  ctx.clearRect(0, 0, W, H);
+  const pad = {{l:40, r:8, t:8, b:20}}, pw = W-pad.l-pad.r, ph = H-pad.t-pad.b;
+  let maxV = 200;
+  HOURLY.forEach(d => maxV = Math.max(maxV, d.pv, d.load, d.grid_import, d.ess_ch, d.ess_disch));
+  maxV = Math.ceil(maxV/200)*200 + 200;
+  const xs = h => pad.l + (h/23)*pw;
+  const ys = v => pad.t + ph - (v/maxV)*ph;
+
+  // Grid
+  ctx.strokeStyle = '#1a3050'; ctx.lineWidth = 0.5;
+  for (let i=0; i<=4; i++) {{ ctx.beginPath(); ctx.moveTo(0, pad.t+ph*i/4); ctx.lineTo(W, pad.t+ph*i/4); ctx.stroke(); }}
+
+  // Cursor
+  ctx.fillStyle = 'rgba(0,200,240,0.07)';
+  ctx.fillRect(xs(curH)-pw/46, pad.t, pw/23, ph);
+  ctx.strokeStyle = '#00c8f0'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(xs(curH), pad.t); ctx.lineTo(xs(curH), pad.t+ph); ctx.stroke();
+
+  // PV fill
+  ctx.fillStyle = 'rgba(240,160,32,0.08)';
+  ctx.beginPath(); ctx.moveTo(xs(0), ys(0));
+  HOURLY.forEach((d,i) => ctx.lineTo(xs(i), ys(d.pv)));
+  ctx.lineTo(xs(23), ys(0)); ctx.closePath(); ctx.fill();
+
+  // Curves
+  [['pv','#f0a020',null],['load','#e8e8f0',null],['grid_import','#e04050',[5,3]],
+    ['ess_disch','#60d040',[4,3]],['ess_ch','#4090d0',[4,3]]].forEach(([k,c,d]) => {{
+    ctx.strokeStyle = c; ctx.lineWidth = 2; if (d) ctx.setLineDash(d);
+    ctx.beginPath();
+    HOURLY.forEach((d,i) => i===0 ? ctx.moveTo(xs(i), ys(d[k]||0)) : ctx.lineTo(xs(i), ys(d[k]||0)));
+    ctx.stroke(); ctx.setLineDash([]);
+  }});
+
+  // Labels
+  ctx.font = '8px "Microsoft YaHei"'; ctx.fillStyle = '#5a7a9a';
+  for (let h=0; h<=23; h+=4) ctx.fillText(h+':00', xs(h)-10, H-4);
+  for (let v=0; v<=maxV; v+=Math.ceil(maxV/5)) ctx.fillText(v, pad.l-34, ys(v)+3);
+}}
+
+function drawSocChart() {{
+  const c = document.getElementById('socCanvas');
+  if (!c) return;
+  const r = c.parentElement.getBoundingClientRect();
+  c.width = r.width - 14; c.height = r.height - 24;
+  const ctx = c.getContext('2d'), W = c.width, H = c.height;
+  if (W <= 0 || H <= 0) return;
+  ctx.clearRect(0, 0, W, H);
+  const pad = {{l:40, r:40, t:6, b:20}}, pw = W-pad.l-pad.r, ph = H-pad.t-pad.b;
+  const xs = h => pad.l + (h/23)*pw;
+  const ysS = v => pad.t + ph - v*ph;
+  const ysT = v => pad.t + ph - (v/1.5)*ph;
+
+  ctx.fillStyle = 'rgba(0,200,240,0.07)';
+  ctx.fillRect(xs(curH)-pw/46, pad.t, pw/23, ph);
+
+  // SOC fill
+  ctx.fillStyle = 'rgba(96,208,64,0.08)';
+  ctx.beginPath(); ctx.moveTo(xs(0), ysS(0.1));
+  HOURLY.forEach((d,i) => ctx.lineTo(xs(i), ysS(d.soc)));
+  ctx.lineTo(xs(23), ysS(0.1)); ctx.closePath(); ctx.fill();
+
+  // SOC line
+  ctx.strokeStyle = '#60d040'; ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  HOURLY.forEach((d,i) => i===0 ? ctx.moveTo(xs(i), ysS(d.soc)) : ctx.lineTo(xs(i), ysS(d.soc)));
+  ctx.stroke();
+
+  // Range
+  ctx.strokeStyle = '#2a5a2a'; ctx.lineWidth = 0.5; ctx.setLineDash([2,4]);
+  [0.1,0.9].forEach(v => {{ ctx.beginPath(); ctx.moveTo(pad.l, ysS(v)); ctx.lineTo(W-pad.r, ysS(v)); ctx.stroke(); }});
+
+  // TOU
+  ctx.strokeStyle = '#c090d0'; ctx.lineWidth = 1.5; ctx.setLineDash([5,4]);
+  ctx.beginPath();
+  HOURLY.forEach((d,i) => i===0 ? ctx.moveTo(xs(i), ysT(d.tou)) : ctx.lineTo(xs(i), ysT(d.tou)));
+  ctx.stroke(); ctx.setLineDash([]);
+
+  ctx.font = '8px "Microsoft YaHei"'; ctx.fillStyle = '#5a7a9a';
+  for (let h=0; h<=23; h+=4) ctx.fillText(h+':00', xs(h)-10, H-4);
+  ctx.fillStyle = '#60d040'; ctx.fillText('SOC', 3, 12);
+  ctx.fillStyle = '#c090d0'; ctx.fillText('TOU', 3, 24);
+}}
+
+// ===== Detail overlay =====
+function showDetail(key) {{
+  const d = DETAIL[key];
+  if (!d) return;
+  document.getElementById('detailName').textContent = d.name;
+  document.getElementById('detailCap').textContent = '额定容量: ' + d.capacity;
+
+  let specsHtml = '';
+  d.specs.forEach(([k,v]) => {{
+    specsHtml += '<div class="sk">' + k + '</div><div class="sv">' + v + '</div>';
+  }});
+  document.getElementById('detailSpecs').innerHTML = specsHtml;
+
+  // Live data
+  const hd = HOURLY[curH];
+  let liveText = '当前时刻 (' + String(curH).padStart(2,'0') + ':00) ';
+  if (key === 'pv') liveText += '出力: ' + hd.pv.toFixed(0) + ' kW';
+  else if (key === 'ess') liveText += (hd.ess_ch > 2 ? '充电: ' + hd.ess_ch.toFixed(0) : hd.ess_disch > 2 ? '放电: ' + hd.ess_disch.toFixed(0) : '待机') + ' | SOC: ' + (hd.soc*100).toFixed(0) + '%';
+  else if (key === 'ev') liveText += '充电负荷: ' + hd.load.toFixed(0) + ' kW';
+  else if (key === 'building') liveText += '建筑: ' + BLDG_LOAD[curH].toFixed(0) + ' kW | 充电: ' + CHG_LOAD[curH].toFixed(0) + ' kW';
+  else if (key === 'transformer') liveText += '网购: ' + (hd.grid_import > 1 ? hd.grid_import.toFixed(0) : '0') + ' kW | 上网: ' + (hd.grid_export > 1 ? hd.grid_export.toFixed(0) : '0') + ' kW';
+  document.getElementById('detailLive').textContent = liveText;
+
+  document.getElementById('detailOverlay').classList.add('show');
+}}
+
+function hideDetail(e) {{
+  if (e && e.target !== document.getElementById('detailOverlay')) return;
+  document.getElementById('detailOverlay').classList.remove('show');
+}}
+
+// ===== Update UI =====
+function updateDisplay(h) {{
+  curH = h;
+  const d = HOURLY[h];
+
+  document.getElementById('mPV').textContent = d.pv.toFixed(0);
+  document.getElementById('mLoad').textContent = d.load.toFixed(0);
+  document.getElementById('mSOC').textContent = (d.soc*100).toFixed(1);
+  document.getElementById('mNet').textContent = d.net.toFixed(0);
+  const gf = d.grid_import > 1 ? '+' + d.grid_import.toFixed(0) : d.grid_export > 1 ? '-' + d.grid_export.toFixed(0) : '0';
+  document.getElementById('mGrid').textContent = gf;
+  document.getElementById('mTOU').textContent = d.tou.toFixed(3);
+  document.getElementById('mFlow').textContent = d.ess_ch > 2 ? '充 '+d.ess_ch.toFixed(0) : d.ess_disch > 2 ? '放 '+d.ess_disch.toFixed(0) : '待机';
+  document.getElementById('mTime').textContent = String(h).padStart(2,'0') + ':00';
+  document.getElementById('timeLabel').textContent = String(h).padStart(2,'0') + ':00';
+  document.getElementById('timeSlider').value = h;
+
+  // SVG power displays
+  document.getElementById('svgPvPower').textContent = d.pv.toFixed(0) + ' kW';
+  document.getElementById('svgEvPower').textContent = d.load.toFixed(0) + ' kW';
+  document.getElementById('svgEssPower').textContent = (d.ess_ch > 1 ? '⇣'+d.ess_ch.toFixed(0) : d.ess_disch > 1 ? d.ess_disch.toFixed(0)+'⇡' : '0') + ' kW';
+  document.getElementById('svgBldPower').textContent = d.load.toFixed(0) + ' kW';
+  document.getElementById('svgBldDetail').textContent = '充电:' + CHG_LOAD[curH].toFixed(0) + ' | 建筑:' + BLDG_LOAD[curH].toFixed(0) + ' kW';
+
+  // SOC bar width
+  document.getElementById('svgSocBar').setAttribute('width', d.soc * 56);
+  document.getElementById('svgSocText').textContent = (d.soc*100).toFixed(0) + '%';
+
+  // Line opacity based on power
+  document.querySelectorAll('#sldSvg line').forEach(l => l.style.opacity = '1');
+
+  // Day/night
+  const isDay = h >= 6 && h < 19;
+  document.getElementById('dayNightIcon').textContent = isDay ? '☀️' : '🌙';
+  document.body.style.background = isDay ? '#060e18' : '#040a14';
+  const hourLabel = isDay ? '白天' : '夜间';
+  document.getElementById('dateSub').textContent =
+    CALENDAR.weekday + ' · ' + CALENDAR.season_label + ' · ' + hourLabel + ' · ' + CALENDAR.weather_label;
+
+  // Summary
+  document.getElementById('sumPV').textContent = SUMMARY.total_pv.toFixed(0);
+  document.getElementById('sumLoad').textContent = SUMMARY.total_load.toFixed(0);
+  document.getElementById('sumGrid').textContent = SUMMARY.total_grid_import.toFixed(0);
+  document.getElementById('sumSSR').textContent = (SUMMARY.self_sufficiency*100).toFixed(1) + '%';
+  document.getElementById('sumCost').textContent = SUMMARY.total_grid_cost.toFixed(0);
+  document.getElementById('sumCarbon').textContent = SUMMARY.carbon_reduction_t.toFixed(0);
+
+  drawPowerChart();
+  drawSocChart();
+  updateParticles(d);
+}}
+
+// ===== Animated particles =====
+function updateParticles(d) {{
+  flowT += 0.05;
+
+  function alongLine(x, y1, y2, t) {{
+    return {{ cx: x, cy: y1 + (y2 - y1) * (t % 1) }};
+  }}
+
+  function setDot(id, pos, opacity, color) {{
+    const dot = document.getElementById(id);
+    dot.setAttribute('cx', pos.cx);
+    dot.setAttribute('cy', pos.cy);
+    dot.setAttribute('opacity', opacity);
+    if (color) dot.setAttribute('fill', color);
+  }}
+
+  // 面板底部≈345, 母线≈148, 线长≈197px
+
+  // PV: 发电时粒子从面板流向母线
+  if (d.pv > 2) {{
+    setDot('dotPv', alongLine(107, 345, 148, flowT), Math.min(1, d.pv/PV_CAP*3), '#f0a020');
+  }} else {{ document.getElementById('dotPv').setAttribute('opacity', '0.05'); }}
+
+  // ESS: 充电向下, 放电向上
+  if (d.ess_ch > 2) {{
+    setDot('dotEss', alongLine(310, 148, 345, flowT), 1, '#4090d0');
+  }} else if (d.ess_disch > 2) {{
+    setDot('dotEss', alongLine(310, 345, 148, flowT), 1, '#60d040');
+  }} else {{ document.getElementById('dotEss').setAttribute('opacity', '0.05'); }}
+
+  // EV: 负荷粒子从母线流向负载
+  if (d.load > 3) {{
+    setDot('dotEv', alongLine(513, 148, 345, flowT), Math.min(1, d.load/1200), '#e04050');
+  }} else {{ document.getElementById('dotEv').setAttribute('opacity', '0'); }}
+
+  // Building: 负荷粒子
+  if (d.load > 3) {{
+    setDot('dotBld', alongLine(716, 148, 345, flowT), Math.min(1, d.load/800), '#b0c0d0');
+  }} else {{ document.getElementById('dotBld').setAttribute('opacity', '0'); }}
+
+  // Grid: 网购向下, 上网向上
+  if (d.grid_import > 5) {{
+    setDot('dotGrid', alongLine(580, 104, 128, flowT), 1, '#e04050');
+  }} else if (d.grid_export > 5) {{
+    setDot('dotGrid', alongLine(580, 128, 104, flowT), 1, '#30d0b0');
+  }} else {{ document.getElementById('dotGrid').setAttribute('opacity', '0.08'); }}
+
+  if (autoPlay) animId = requestAnimationFrame(() => updateParticles(HOURLY[curH]));
+}}
+
+// ===== Calendar init =====
+document.getElementById('dateText').textContent = CALENDAR.date;
+const badge = document.getElementById('dayTypeBadge');
+badge.textContent = CALENDAR.day_type_label;
+badge.className = 'badge ' + CALENDAR.day_type;
+
+// ===== Auto play =====
+function toggleAutoPlay() {{
+  autoPlay = !autoPlay;
+  const btn = document.getElementById('playBtn');
+  if (autoPlay) {{
+    btn.textContent = '⏸ 停止'; btn.style.background = '#e04050';
+    animId = requestAnimationFrame(() => updateParticles(HOURLY[curH]));
+    autoTimer = setInterval(() => updateDisplay((curH + 1) % 24), 1500);
+  }} else {{
+    btn.textContent = '▶ 播放'; btn.style.background = 'var(--accent)';
+    if (autoTimer) clearInterval(autoTimer);
+    if (animId) cancelAnimationFrame(animId);
+  }}
+}}
+
+// ===== Init =====
+document.getElementById('timeSlider').addEventListener('input', function() {{
+  updateDisplay(parseInt(this.value));
+  updateParticles(HOURLY[curH]);
+}});
+
+document.addEventListener('keydown', function(e) {{
+  if (e.key === 'ArrowLeft') {{ updateDisplay(Math.max(0, curH-1)); updateParticles(HOURLY[curH]); }}
+  if (e.key === 'ArrowRight') {{ updateDisplay(Math.min(23, curH+1)); updateParticles(HOURLY[curH]); }}
+  if (e.key === ' ') {{ e.preventDefault(); toggleAutoPlay(); }}
+  if (e.key === 'Escape') hideDetail();
+}});
+
+window.addEventListener('resize', () => {{ drawPowerChart(); drawSocChart(); }});
+
+updateDisplay(12);
+updateParticles(HOURLY[12]);
+</script>
+</body>
+</html>'''
+    return html
+
+
+def main():
+    print("=" * 55)
+    print("Microgrid Frontend Generator v2")
+    print("=" * 55)
+    print("\n[1/2] Running simulation...")
+    (hourly_data, summary, mc_scenarios, calendar_ctx,
+     charging_load_hourly, building_load_hourly) = run_simulation()
+
+    print(f"  Display: Day {summary['display_day']} (month {summary['display_day']//30+1})")
+    print(f"  PV: {summary['total_pv']:.0f} kWh | Load: {summary['total_load']:.0f} kWh")
+    print(f"  SSR: {summary['self_sufficiency']:.1%}")
+
+    print("\n[2/2] Generating HTML frontend...")
+    html = build_html(hourly_data, summary, calendar_ctx,
+                      charging_load_hourly, building_load_hourly)
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    output_path = os.path.join(OUTPUT_DIR, 'microgrid_frontend.html')
+    with open(output_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    print(f"\nFrontend saved: {os.path.abspath(output_path)}")
+    print(f"File size: {os.path.getsize(output_path)/1024:.0f} KB")
+    print("Open in browser to view interactive microgrid monitoring interface")
+
+
+if __name__ == '__main__':
+    main()

@@ -87,6 +87,34 @@
 
 ---
 
+---
+## v5 变更概要 (2026-06-11)
+
+### 新增: 微电网可视化前端
+
+| 文件 | 说明 |
+|------|------|
+| `microgrid_frontend.py` | 可视化前端生成器，运行仿真后输出独立HTML文件 |
+| `figures/microgrid_frontend.html` | SCADA风格微电网单线图监控界面 (44KB, 浏览器打开即用) |
+| `interactive_dashboard.py` | 早期Plotly版本 (已被microgrid_frontend取代) |
+
+**前端功能**: SVG单线图(完整微网拓扑) · 设备级子图标(组件/电池柜/充电桩) · 动态能流粒子动画 · 2025真实日历+昼夜切换 · 日类型标签(工作日/双休日/节假日/春运) · 点击展开设备详情 · 24h时序播放 · Canvas功率曲线+SOC图 · 日能量汇总
+
+**技术栈**: 独立HTML (零依赖) · SVG+Canvas+JS · viewBox 1200×560 · requestAnimationFrame动画 · 仿真数据JSON嵌入
+
+**运行**: `python microgrid_frontend.py && open figures/microgrid_frontend.html`
+
+### 前端修复迭代 (v5.1)
+
+| # | 问题 | 修复 |
+|---|------|------|
+| 1 | drawPowerChart中 `[[[...]]]` 多余数组嵌套导致JS曲线绘制失败、播放按钮无效 | → `[[...]]` 单层数组 |
+| 2 | SVG面板宽度150px间距20px, 排版拥挤 | → 面板175px宽/180px高, 间距28px, viewBox 1200×560 |
+| 3 | DEVICE_SPECS未定义导致生成失败 | 补充模块级常量定义 |
+| 4 | 能流粒子坐标未匹配新布局 | 更新PV/ESS/EV/Building/Grid 5组坐标 |
+| 5 | 夜间/低负荷时段粒子完全不可见 | 阈值降至PV>2kW, 负荷>3kW, 粒子路径加长至~197px |
+
+---
 ## 已知限制 (v4 仍存在)
 
 - 8760h仿真中PV天气和日类型的随机分配较简化, 未反映真实日历结构
