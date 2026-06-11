@@ -1,0 +1,15 @@
+{
+  "pv_capacity": 1230.7692307692307,
+  "ess_capacity": 0,
+  "ess_power": 0,
+  "npc": 42000883.2997248,
+  "self_sufficiency": 0.24986919717371944,
+  "annual_grid_import_kwh": 3566061.3761736737,
+  "annual_grid_export_kwh": 0.0,
+  "annual_pv_gen_kwh": 1204748.5683076929,
+  "annual_load_kwh": 4821516.945404446,
+  "annual_self_used_kwh": 1204748.5683076929,
+  "carbon_reduction_t": 687.0681085058774,
+  "capital_cost": 9974230.769230768,
+  "payback_years": 15.709621709969742
+}
