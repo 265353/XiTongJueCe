@@ -150,25 +150,32 @@ def run_sensitivity(opt):
     npc_grid = np.zeros((5, 5))
 
     import config
+    # 深拷贝原始值
     orig_pv_cost = {k: v for k, v in config.PV_COST.items()}
-    orig_price = {k: v for k, v in config.TOU_PRICE_VALUES.items()}
+    orig_price = {season: dict(prices) for season, prices in config.TOU_PRICE_VALUES.items()}
 
     for i, pvm in enumerate(pv_mult):
         for j, prm in enumerate(price_mult):
+            # 修改PV成本
             for k in config.PV_COST:
                 config.PV_COST[k] = orig_pv_cost[k] * pvm
-            for k in config.TOU_PRICE_VALUES:
-                config.TOU_PRICE_VALUES[k] = orig_price[k] * prm
+            # 修改TOU电价 (嵌套结构: season -> {peak, flat, valley})
+            for season in config.TOU_PRICE_VALUES:
+                for period in config.TOU_PRICE_VALUES[season]:
+                    config.TOU_PRICE_VALUES[season][period] = (
+                        orig_price[season][period] * prm)
 
             result, _ = opt.optimize_pso(pop_size=30, max_iter=25, verbose=False)
 
             pv_cap_grid[i, j] = result['pv_capacity']
             npc_grid[i, j] = result['npc']
 
+    # 恢复原始值
     for k in config.PV_COST:
         config.PV_COST[k] = orig_pv_cost[k]
-    for k in config.TOU_PRICE_VALUES:
-        config.TOU_PRICE_VALUES[k] = orig_price[k]
+    for season in config.TOU_PRICE_VALUES:
+        for period in config.TOU_PRICE_VALUES[season]:
+            config.TOU_PRICE_VALUES[season][period] = orig_price[season][period]
 
     print("Sensitivity analysis complete")
     return {
