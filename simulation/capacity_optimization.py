@@ -19,6 +19,12 @@ from config import (
     TRANSFORMER_CAPACITY_KVA, TRANSFORMER_PF_MIN,
     get_tou_price, get_tou_price_array,
     RESPONSE_TIME,
+    # v5 新增: 经济增强参数
+    CCER_PRICE, CCER_PRICE_ESCALATION,
+    PV_SUBSIDY_PER_KWP, ESS_SUBSIDY_PER_KWH, ESS_SUBSIDY_PER_KW,
+    CHARGING_SUBSIDY_PER_PILE, MAX_SUBSIDY_RATIO,
+    SCENARIOS, SCENARIO_BASELINE,
+    MONTHLY_AMBIENT_TEMP, get_ess_temp_derate,
 )
 
 # 日类型年权重 (来源于文件12)
@@ -447,18 +453,27 @@ class MicrogridOptimizer:
 
         annual_grid_cost -= annual_grid_export_rev
 
+        # 碳交易收益 (数据来源: 全国碳排放权交易市场CEA/CCER)
+        carbon_reduction = annual_self_used / 1000 * CARBON_FACTOR_GRID
+        annual_carbon_revenue = carbon_reduction * CCER_PRICE
+
         # 经济计算
         capex_detail = self._capex_detail(pv_cap, ess_cap, ess_pow)
+        subsidy_detail = self._calculate_subsidy(pv_cap, ess_cap, ess_pow)
+        # 补贴不超总投资30%
+        subsidy_applied = min(subsidy_detail['total'],
+                             capex_detail['total'] * MAX_SUBSIDY_RATIO)
         total_capex = capex_detail['total']
         npc = self._calculate_npc_detailed(capex_detail, pv_cap, ess_cap, ess_pow,
-                                            annual_grid_cost, annual_ess_cycles)
+                                            annual_grid_cost, annual_ess_cycles,
+                                            annual_carbon_revenue,
+                                            subsidy_applied)
 
-        # 年收益 = 无光储时的网购电成本 - 有光储时的网购电成本
-        # 无光储时: 全年负荷按平电价全购电
+        # 年收益 = 无光储时的网购电成本 - 有光储时的网购电成本 + 碳收益
         annual_cost_without = annual_load * flat_price
-        annual_saving = annual_cost_without - annual_grid_cost
-        payback = self._dynamic_payback(total_capex, annual_saving)
-        carbon_reduction = annual_self_used / 1000 * CARBON_FACTOR_GRID
+        annual_saving = (annual_cost_without - annual_grid_cost
+                        + annual_carbon_revenue)
+        payback = self._dynamic_payback(total_capex - subsidy_applied, annual_saving)
 
         return {
             'pv_capacity': pv_cap,
@@ -474,11 +489,64 @@ class MicrogridOptimizer:
             'annual_self_used_kwh': annual_self_used,
             'annual_ess_cycles': annual_ess_cycles,
             'annual_grid_cost': annual_grid_cost,
+            'annual_carbon_revenue': annual_carbon_revenue,
             'carbon_reduction_t': carbon_reduction,
             'capital_cost': total_capex,
+            'subsidy': subsidy_applied,
+            'net_capital_cost': total_capex - subsidy_applied,
             'payback_years': payback,
             'capex_detail': capex_detail,
+            'subsidy_detail': subsidy_detail,
         }
+
+    def evaluate_config_scenario(self, pv_cap, ess_cap, ess_pow, scenario_name='baseline'):
+        """多情景评估: 基于演化情景重新计算NPC
+
+        数据来源: 文件06 §5 (负荷增长率)
+                 文件02 (EV渗透率增长)
+                 文件09 §5.2 (情景分析)
+
+        Parameters
+        ----------
+        scenario_name : str
+            'baseline' / 'conservative' / 'aggressive'
+        """
+        scenario_params = SCENARIOS.get(scenario_name, SCENARIO_BASELINE)
+
+        # 复用 evaluate_config 的核心计算
+        result = self.evaluate_config(pv_cap, ess_cap, ess_pow)
+
+        # 使用情景参数重新计算NPC
+        capex_detail = result.get('capex_detail', self._capex_detail(pv_cap, ess_cap, ess_pow))
+        subsidy_detail = result.get('subsidy_detail', self._calculate_subsidy(pv_cap, ess_cap, ess_pow))
+        subsidy_applied = min(subsidy_detail['total'],
+                             capex_detail['total'] * MAX_SUBSIDY_RATIO)
+
+        npc = self._calculate_npc_detailed(
+            capex_detail, pv_cap, ess_cap, ess_pow,
+            result['annual_grid_cost'], result['annual_ess_cycles'],
+            result.get('annual_carbon_revenue', result['carbon_reduction_t'] * CCER_PRICE),
+            subsidy_applied,
+            scenario_params=scenario_params,
+        )
+
+        # 动态回收期 (考虑负荷增长和电价上涨)
+        annual_cost_without = result['annual_load_kwh'] * np.mean(
+            [v['flat'] for v in TOU_PRICE_VALUES.values()])
+        annual_saving = (annual_cost_without - result['annual_grid_cost']
+                        + result.get('annual_carbon_revenue', 0))
+        payback = self._dynamic_payback(capex_detail['total'] - subsidy_applied,
+                                        annual_saving)
+
+        scenario_result = {**result,
+            'npc': npc,
+            'npc_wan_yuan': npc / 1e4,
+            'payback_years': payback,
+            'scenario': scenario_name,
+            'scenario_params': scenario_params,
+            'net_capital_cost': capex_detail['total'] - subsidy_applied,
+        }
+        return scenario_result
 
     def _dynamic_payback(self, capex, annual_saving):
         """动态投资回收期 (含折现率)"""
@@ -495,6 +563,23 @@ class MicrogridOptimizer:
                     return yr - 1 + frac
                 return float(yr)
         return float('inf')
+
+    def _calculate_subsidy(self, pv_cap, ess_cap, ess_pow):
+        """计算政府补贴 (一次性建设补贴)
+
+        数据来源: 文件01 (充电设施补贴政策)
+                 文件13 (分布式光伏/储能地方补贴)
+        """
+        pv_subsidy = pv_cap * PV_SUBSIDY_PER_KWP
+        ess_subsidy = ess_cap * ESS_SUBSIDY_PER_KWH + ess_pow * ESS_SUBSIDY_PER_KW
+        charging_subsidy = (self.n_piles_120 + self.n_piles_480) * CHARGING_SUBSIDY_PER_PILE
+        total_subsidy = pv_subsidy + ess_subsidy + charging_subsidy
+        return {
+            'pv_subsidy': pv_subsidy,
+            'ess_subsidy': ess_subsidy,
+            'charging_subsidy': charging_subsidy,
+            'total': total_subsidy,
+        }
 
     def _capex_detail(self, pv_cap, ess_cap, ess_pow):
         """设备级CAPEX明细"""
@@ -529,63 +614,101 @@ class MicrogridOptimizer:
         return detail
 
     def _calculate_npc_detailed(self, capex, pv_cap, ess_cap, ess_pow,
-                                 annual_grid_cost, annual_ess_cycles):
-        """设备级NPC — 分时计价网购成本 + 电池逐年衰减 + 设备更换"""
-        capital = capex['total']
+                                 annual_grid_cost, annual_ess_cycles,
+                                 annual_carbon_revenue=0.0, subsidy=0.0,
+                                 scenario_params=None):
+        """设备级NPC — 含碳交易+补贴+负荷增长+电价上涨
+
+        Parameters
+        ----------
+        scenario_params : dict or None
+            演化情景参数 (SCENARIO_BASELINE等).
+            含: load_growth_rate, grid_price_escalation, carbon_price_growth,
+                 discount_rate
+            若为None则使用静态模型 (年增长率为0).
+        """
+        if scenario_params is None:
+            scenario_params = {
+                'load_growth_rate': 0.0,
+                'grid_price_escalation': 0.0,
+                'carbon_price_growth': 0.0,
+                'discount_rate': DISCOUNT_RATE,
+            }
+
+        capital = capex['total'] - subsidy  # 扣除补贴
 
         om_pv = capex['pv_subtotal'] * OM_RATE['pv']
         om_ess = capex['ess_subtotal'] * OM_RATE['ess']
         om_charging = capex['charging_subtotal'] * OM_RATE['charging']
         om_annual = om_pv + om_ess + om_charging
 
-        # 电池容量逐年衰减 → 储能调节能力下降, 网购电成本逐年增加
+        # 电池容量逐年衰减
         annual_degradation = (ESS_CAPACITY_FADE_CALENDAR +
                               ESS_CAPACITY_FADE_PER_CYCLE * annual_ess_cycles)
         ess_degrade_factor = 1.0
 
+        dr = scenario_params.get('discount_rate', DISCOUNT_RATE)
+        lgr = scenario_params.get('load_growth_rate', 0.0)
+        gpe = scenario_params.get('grid_price_escalation', 0.0)
+        cpg = scenario_params.get('carbon_price_growth', 0.0)
+
         npv_grid_cost = 0.0
+        npv_carbon_rev = 0.0
+
         for yr in range(1, PROJECT_LIFE + 1):
+            # 负荷增长 + 电价上涨: 网购电成本逐年增加
+            load_factor = (1.0 + lgr) ** (yr - 1)
+            price_factor = (1.0 + gpe) ** (yr - 1)
             degrade_penalty = 1.0 + (1.0 - ess_degrade_factor) * 0.3
-            yr_grid_cost = annual_grid_cost * degrade_penalty
-            npv_grid_cost += yr_grid_cost / (1 + DISCOUNT_RATE) ** yr
+
+            yr_grid_cost = (annual_grid_cost * degrade_penalty
+                           * load_factor * price_factor)
+            npv_grid_cost += yr_grid_cost / (1 + dr) ** yr
+
+            # 碳交易收益 (随碳价增长)
+            carbon_factor = (1.0 + cpg) ** (yr - 1)
+            yr_carbon_rev = annual_carbon_revenue * carbon_factor
+            npv_carbon_rev += yr_carbon_rev / (1 + dr) ** yr
+
             ess_degrade_factor = max(0.60, ess_degrade_factor - annual_degradation)
 
-        npv_om = om_annual * sum(1.0 / (1 + DISCOUNT_RATE) ** y
+        npv_om = om_annual * sum(1.0 / (1 + dr) ** y
                                  for y in range(1, PROJECT_LIFE + 1))
 
-        # --- 设备更换 (按各自寿命) ---
+        # --- 设备更换 ---
         replacement_cost = 0
 
         if LIFESPAN['pv_inverter'] < PROJECT_LIFE:
             rep_year = LIFESPAN['pv_inverter']
             replacement_cost += (capex['pv_inverter'] * REPLACEMENT['inverter'] /
-                                 (1 + DISCOUNT_RATE) ** rep_year)
+                                 (1 + dr) ** rep_year)
 
         if ess_cap > 0 and LIFESPAN['ess_battery'] < PROJECT_LIFE:
             rep_year = LIFESPAN['ess_battery']
             replacement_cost += (capex['ess_battery'] * REPLACEMENT['ess_battery'] /
-                                 (1 + DISCOUNT_RATE) ** rep_year)
+                                 (1 + dr) ** rep_year)
 
         if ess_pow > 0 and LIFESPAN['ess_pcs'] < PROJECT_LIFE:
             rep_year = LIFESPAN['ess_pcs']
             replacement_cost += (capex['ess_pcs'] * REPLACEMENT['pcs'] /
-                                 (1 + DISCOUNT_RATE) ** rep_year)
+                                 (1 + dr) ** rep_year)
 
         if LIFESPAN['charging_pile'] < PROJECT_LIFE:
             rep_year = LIFESPAN['charging_pile']
             replacement_cost += (capex['charging_subtotal'] * REPLACEMENT['charging'] /
-                                 (1 + DISCOUNT_RATE) ** rep_year)
+                                 (1 + dr) ** rep_year)
 
         if LIFESPAN['ems_hw'] < PROJECT_LIFE:
             ems_hw_cost = capex['fixed']['ems'] * 0.4
             for yr in [5, 10, 15]:
                 if yr <= PROJECT_LIFE:
                     replacement_cost += (ems_hw_cost * REPLACEMENT['ems_hw'] /
-                                         (1 + DISCOUNT_RATE) ** yr)
+                                         (1 + dr) ** yr)
 
-        salvage = capital * RESIDUAL_RATE / (1 + DISCOUNT_RATE) ** PROJECT_LIFE
+        salvage = capital * RESIDUAL_RATE / (1 + dr) ** PROJECT_LIFE
 
-        return capital + npv_om + npv_grid_cost + replacement_cost - salvage
+        npc = capital + npv_om + npv_grid_cost + replacement_cost - salvage - npv_carbon_rev
+        return npc
 
     def optimize_pso(self, pop_size=50, max_iter=30, verbose=True):
         """PSO优化"""

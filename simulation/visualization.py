@@ -280,6 +280,139 @@ def fig7_monthly_energy_balance(monthly_pv, monthly_load, save=True):
     return fig
 
 
+def fig8_decision_topsis(decision_result, save=True):
+    """图8: AHP-TOPSIS决策结果 — 方案贴近度对比柱状图
+
+    数据来源: 文件09 §4.3 TOPSIS计算结果
+    """
+    ensure_output_dir()
+
+    schemes = decision_result.schemes
+    scores = decision_result.topsis['scores']
+    ranks = decision_result.topsis['rank']
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    colors = plt.cm.RdYlGn(scores / scores.max())
+
+    bars = ax.bar(range(len(schemes)), scores, color=colors,
+                  edgecolor='black', linewidth=0.8)
+
+    # 标注贴近度和排名
+    for i, (score, rank) in enumerate(zip(scores, ranks)):
+        ax.text(i, score + 0.02, f'C={score:.3f}\nRank #{rank}',
+                ha='center', fontsize=10, fontweight='bold')
+
+    ax.set_xticks(range(len(schemes)))
+    ax.set_xticklabels(schemes, fontsize=10)
+    ax.set_ylabel('相对贴近度 C_i', fontsize=12)
+    ax.set_ylim(0, 1.1)
+    ax.set_title('AHP-TOPSIS方案综合评价结果 (相对贴近度)', fontsize=14)
+    ax.grid(True, alpha=0.3, axis='y')
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig8_decision_topsis.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig8_decision_topsis.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
+def fig9_scenario_comparison(scenario_results, save=True):
+    """图9: 多情景NPC-自洽率对比散点图
+
+    Parameters
+    ----------
+    scenario_results : dict
+        {scenario_name: {'npc_wan_yuan': float, 'self_sufficiency': float, ...}}
+    """
+    ensure_output_dir()
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    scenario_colors = {
+        'conservative': '#3498db',
+        'baseline': '#f39c12',
+        'aggressive': '#e74c3c',
+    }
+    scenario_markers = {'conservative': 's', 'baseline': 'o', 'aggressive': '^'}
+
+    for name, result in scenario_results.items():
+        color = scenario_colors.get(name, '#888888')
+        marker = scenario_markers.get(name, 'o')
+        ax.scatter(result['self_sufficiency'] * 100, result['npc_wan_yuan'],
+                   s=200, c=color, marker=marker, edgecolors='black',
+                   linewidth=1.5, label=f'{name} 情景', zorder=5)
+        ax.annotate(
+            f"PV={result.get('pv_capacity', 0):.0f}kWp\n"
+            f"ESS={result.get('ess_capacity', 0):.0f}kWh\n"
+            f"NPC={result['npc_wan_yuan']:.0f}万",
+            xy=(result['self_sufficiency'] * 100, result['npc_wan_yuan']),
+            xytext=(10, 15), textcoords='offset points',
+            fontsize=8, alpha=0.8,
+            bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+    ax.set_xlabel('新能源自洽率 (%)', fontsize=12)
+    ax.set_ylabel('NPC (万元)', fontsize=12)
+    ax.set_title('多情景分析: 保守/基准/激进情景对比', fontsize=14)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig9_scenario_comparison.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig9_scenario_comparison.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
+def fig10_pareto_3d(pareto_solutions, save=True):
+    """图10: NSGA-II三维Pareto前沿 (NPC × SSR × Carbon)
+
+    Parameters
+    ----------
+    pareto_solutions : list[dict]
+        NSGA-II输出的Pareto最优解集
+    """
+    ensure_output_dir()
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    npc_wan = [s['npc_wan_yuan'] for s in pareto_solutions]
+    ssr = [s['ssr_pct'] for s in pareto_solutions]
+    carbon = [s['carbon_reduction_t'] for s in pareto_solutions]
+    pv = [s['pv_capacity'] for s in pareto_solutions]
+
+    scatter = ax.scatter(npc_wan, ssr, carbon, c=pv, cmap='RdYlGn_r',
+                        s=60, edgecolors='black', linewidth=0.5, alpha=0.85)
+
+    ax.set_xlabel('NPC (万元)', fontsize=11, labelpad=10)
+    ax.set_ylabel('自洽率 (%)', fontsize=11, labelpad=10)
+    ax.set_zlabel('碳减排 (tCO2/年)', fontsize=11, labelpad=10)
+    ax.set_title('NSGA-II 三维Pareto前沿\nNPC vs 自洽率 vs 碳减排',
+                 fontsize=14, pad=15)
+
+    cbar = fig.colorbar(scatter, ax=ax, shrink=0.6, pad=0.1)
+    cbar.set_label('PV容量 (kWp)', fontsize=10)
+
+    # 标注最优折中解 (SSR > 25% 中NPC最低)
+    feasible = [s for s in pareto_solutions if s['ssr_pct'] > 25]
+    if feasible:
+        best = min(feasible, key=lambda s: s['npc_wan_yuan'])
+        ax.scatter([best['npc_wan_yuan']], [best['ssr_pct']],
+                   [best['carbon_reduction_t']],
+                   s=200, c='red', marker='*', edgecolors='black',
+                   linewidth=1.5, label='推荐折中解', zorder=10)
+        ax.legend(fontsize=10)
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig10_pareto_3d.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig10_pareto_3d.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
 if __name__ == '__main__':
     print("可视化模块加载成功")
     print(f"图表输出目录: {OUTPUT_DIR}")

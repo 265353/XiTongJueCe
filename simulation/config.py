@@ -277,6 +277,121 @@ LOLP_MAX = 0.02
 PV_AREA_RATIO = 6.5        # m²/kWp
 
 # ============================================================
+# 光伏温度模型参数 (Sandia 热模型)
+# 数据来源: microgrid_architecture.md §2.1 (TOPCon温度系数 -0.30%/℃)
+#          NOCT=43℃ (IEC 61215 标准测试条件, 典型组件额定工作温度)
+#          MONTHLY_AMBIENT_TEMP 来源于中国气象数据网 三类资源区(华中)月均气温
+# ============================================================
+PV_TEMP_COEFF = -0.0030        # /℃ (Pmax温度系数, 即-0.30%/℃)
+PV_NOCT = 43.0                 # ℃ (组件额定工作温度, Nominal Operating Cell Temperature)
+PV_STC_TEMP = 25.0             # ℃ (STC标准测试温度)
+# 华中地区(三类资源区)月平均最高气温 (℃)
+# 用于估算白天时段的光伏电池工作温度
+MONTHLY_AMBIENT_TEMP = {
+    1: 4.0, 2: 7.0, 3: 12.0, 4: 19.0, 5: 24.0, 6: 29.0,
+    7: 32.0, 8: 31.0, 9: 26.0, 10: 20.0, 11: 13.0, 12: 6.0,
+}
+
+# ============================================================
+# 碳交易参数
+# 数据来源: 全国碳排放权交易市场(CEA) 2024-2025年均价约70-80元/tCO2
+#          CCER(中国核证自愿减排量)价格通常略低于CEA, 取70元/tCO2
+#          碳排放因子来源于生态环境部2024年数据 (CARBON_FACTOR_GRID=0.5703 tCO2/MWh)
+# ============================================================
+CCER_PRICE = 70.0              # 元/tCO2 (碳交易价格, 全国碳市场2024-2025均价)
+CCER_PRICE_ESCALATION = 0.03   # 碳价年上涨率 (参考EU ETS历史趋势)
+
+# ============================================================
+# 政府补贴参数
+# 数据来源: 文件01 (充电价格与电价数据, 各省充电设施补贴)
+#          文件13 (设备参数与经济数据, 分布式光伏/储能地方补贴)
+#          国家发改委《关于促进光伏产业健康发展的若干意见》
+#          注: 光伏国家补贴已退坡(2021年后), 但仍有个别省市提供地方补贴
+# ============================================================
+PV_SUBSIDY_PER_KWP = 200.0     # 元/kWp (分布式光伏地方补贴, 部分省份仍有)
+ESS_SUBSIDY_PER_KWH = 100.0    # 元/kWh (储能容量补贴, 部分省份按容量补贴)
+ESS_SUBSIDY_PER_KW = 50.0      # 元/kW (储能功率补贴)
+CHARGING_SUBSIDY_PER_PILE = 10000.0  # 元/台 (充电桩建设补贴, 直流快充桩)
+# 补贴总上限占投资比 (避免补贴超过合理范围)
+MAX_SUBSIDY_RATIO = 0.30       # 补贴不超过总投资的30%
+
+# ============================================================
+# 中长期演化情景参数 (Scenario Parameters)
+# 数据来源: 文件06 §5 (负荷增长率预测: 综合用电年增8-15%)
+#          文件02 §2 (新能源车高速充电行为特征: 渗透率年增15-25%)
+#          文件09 §5.2 (敏感性分析与情景分析)
+# ============================================================
+
+# --- 基准情景 (Baseline) ---
+SCENARIO_BASELINE = {
+    'load_growth_rate': 0.10,          # 综合用电负荷年增长率
+    'ev_penetration_growth': 0.20,     # EV渗透率年增长率
+    'grid_price_escalation': 0.03,     # 电价年上涨率
+    'pv_cost_reduction': 0.02,         # 光伏成本年下降率 (学习曲线)
+    'ess_cost_reduction': 0.04,        # 储能成本年下降率 (技术快速进步)
+    'carbon_price_growth': 0.03,       # 碳价年上涨率
+    'discount_rate': 0.07,             # 折现率
+}
+
+# --- 保守情景 (Conservative) ---
+SCENARIO_CONSERVATIVE = {
+    'load_growth_rate': 0.05,          # 低负荷增长
+    'ev_penetration_growth': 0.10,     # 低EV渗透率增长
+    'grid_price_escalation': 0.01,     # 电价平稳
+    'pv_cost_reduction': 0.01,         # 光伏成本缓慢下降
+    'ess_cost_reduction': 0.02,        # 储能成本缓慢下降
+    'carbon_price_growth': 0.01,       # 碳价平稳
+    'discount_rate': 0.08,             # 较高折现率 (保守投资态度)
+}
+
+# --- 激进情景 (Aggressive) ---
+SCENARIO_AGGRESSIVE = {
+    'load_growth_rate': 0.15,          # 高负荷增长
+    'ev_penetration_growth': 0.28,     # 高EV渗透率增长
+    'grid_price_escalation': 0.05,     # 电价快速上涨
+    'pv_cost_reduction': 0.04,         # 光伏成本快速下降
+    'ess_cost_reduction': 0.07,        # 储能成本快速下降
+    'carbon_price_growth': 0.06,       # 碳价快速上涨
+    'discount_rate': 0.06,             # 较低折现率 (积极投资态度)
+}
+
+# 情景名称映射
+SCENARIOS = {
+    'conservative': SCENARIO_CONSERVATIVE,
+    'baseline': SCENARIO_BASELINE,
+    'aggressive': SCENARIO_AGGRESSIVE,
+}
+
+# ============================================================
+# 储能温度衰减参数
+# 数据来源: 文件13 (LFP电池工作温度范围: 充电0-45℃, 放电-20~60℃)
+#          文献: LFP电池低温容量衰减特性 (0℃时可用容量~85%, -10℃时~70%)
+# ============================================================
+# 环境温度对储能可用容量的影响系数 (基于LFP电池特性)
+# 用于估算冬季储能实际可用容量
+ESS_TEMP_DERATE = {
+    35: 1.00,     # 高温不衰减 (但加速日历老化)
+    25: 1.00,     # 标准温度
+    15: 0.98,     # 微降
+    5:  0.92,     # 低温容量下降 (电解质粘度增大)
+    -5: 0.82,     # 显著下降
+    -10: 0.72,    # 大幅下降
+}
+
+def get_ess_temp_derate(ambient_temp):
+    """根据环境温度查询储能容量衰减系数 (线性插值)
+
+    数据来源: 文件13 LFP电池工作温度特性
+    """
+    temps = np.array(sorted(ESS_TEMP_DERATE.keys()))
+    derates = np.array([ESS_TEMP_DERATE[t] for t in temps])
+    if ambient_temp >= temps[-1]:
+        return derates[-1]
+    if ambient_temp <= temps[0]:
+        return derates[0]
+    return float(np.interp(ambient_temp, temps, derates))
+
+# ============================================================
 # 辅助函数
 # ============================================================
 def get_tou_price(hour, season='spring'):

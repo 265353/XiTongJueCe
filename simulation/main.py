@@ -1,11 +1,12 @@
 """
-主程序 — 高速服务区光储充一体化仿真全流程
-运行: python main.py
+主程序 — 高速服务区光储充一体化仿真全流程 (v5)
+运行: python main.py [--mode full|fast|nsga2]
 """
 import numpy as np
 import json
 import os
 import sys
+import argparse
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -18,11 +19,15 @@ from visualization import (
     fig3_power_balance, fig4_pareto_frontier,
     fig5_sensitivity_heatmap, fig6_radar_chart,
     fig7_monthly_energy_balance,
+    fig8_decision_topsis, fig9_scenario_comparison,
+    fig10_pareto_3d,
 )
 from config import (
     SERVICE_AREA_CONFIG, PV_COEFF, WEATHER_COEFF,
     PV_AREA_RATIO,
 )
+from decision_framework import DecisionFramework
+from nsga2 import NSGA2, print_pareto_summary, save_pareto_results
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'results')
 SEED = 42
@@ -234,9 +239,123 @@ def run_scheme_comparison(opt):
     return schemes
 
 
+def run_nsga2_optimization(opt, pop_size=80, n_gen=40, verbose=True):
+    """Step 3a: NSGA-II多目标优化 (理论来源: 文件08)"""
+    print("\n" + "=" * 60)
+    print("Step 3a: NSGA-II Multi-Objective Optimization")
+    print("=" * 60)
+
+    max_pv = opt.area_config['pv_area_m2'] / PV_AREA_RATIO
+    bounds = np.array([
+        [50, max_pv],
+        [0, 3000],
+        [0, 1000],
+    ])
+
+    nsga2 = NSGA2(opt.evaluate_config, bounds, pop_size=pop_size,
+                  n_gen=n_gen, seed=SEED)
+    pareto_solutions, pareto_obj, history = nsga2.optimize(verbose=verbose)
+
+    print_pareto_summary(pareto_solutions)
+    save_pareto_results(pareto_solutions)
+
+    # 找折中最优解 (SSR > 25% 中NPC最低)
+    feasible = [s for s in pareto_solutions if s['self_sufficiency'] > 0.25]
+    if feasible:
+        best = min(feasible, key=lambda s: s['npc'])
+        print(f"\n推荐折中解: PV={best['pv_capacity']:.0f}kWp, "
+              f"ESS={best['ess_capacity']:.0f}kWh, "
+              f"NPC={best['npc_wan_yuan']:.1f}万元, "
+              f"SSR={best['ssr_pct']:.1f}%")
+        nsga2_best = best
+    else:
+        nsga2_best = None
+
+    return pareto_solutions, nsga2_best
+
+
+def run_decision_framework(opt):
+    """Step 6a: AHP-TOPSIS综合决策遴选 (理论来源: 文件09)"""
+    print("\n" + "=" * 60)
+    print("Step 6a: AHP-TOPSIS Decision Framework")
+    print("=" * 60)
+
+    # 四方案评估 (简化: 使用典型配置)
+    # 方案1: 纯电网
+    s1 = opt.evaluate_config(0, 0, 0)
+    # 方案2: 仅光伏 (场地受限最优)
+    max_pv = opt.area_config['pv_area_m2'] / PV_AREA_RATIO
+    pv_only_cap = max_pv * 0.8
+    s2 = opt.evaluate_config(pv_only_cap, 0, 0)
+    # 方案3: 光伏+储能 (当前最优)
+    s3, _ = opt.optimize_pso(pop_size=30, max_iter=25, verbose=False)
+    # 方案4: 大光伏+大储能
+    s4 = opt.evaluate_config(max_pv * 0.95, 2500, 1200)
+
+    schemes = ['方案A:纯电网', '方案B:仅光伏', '方案C:光储均衡', '方案D:大光储']
+    indicators = ['能源自洽率(%)', 'NPC(万元)', '碳减排(tCO2/年)',
+                  '投资回收期(年)', '光伏消纳率(%)', '供电可靠率(%)']
+    directions = ['benefit', 'cost', 'benefit', 'cost', 'benefit', 'benefit']
+
+    values = np.array([
+        [s1['self_sufficiency'] * 100, s1['npc'] / 1e4,
+         s1['carbon_reduction_t'], s1['payback_years'],
+         min(100, (1 - s1.get('annual_grid_export_kwh', 0) /
+          max(s1.get('annual_pv_gen_kwh', 1), 1)) * 100), 99.5],
+        [s2['self_sufficiency'] * 100, s2['npc'] / 1e4,
+         s2['carbon_reduction_t'], s2['payback_years'],
+         min(100, (1 - s2.get('annual_grid_export_kwh', 0) /
+          max(s2.get('annual_pv_gen_kwh', 1), 1)) * 100), 99.5],
+        [s3['self_sufficiency'] * 100, s3['npc'] / 1e4,
+         s3['carbon_reduction_t'], s3['payback_years'],
+         min(100, (1 - s3.get('annual_grid_export_kwh', 0) /
+          max(s3.get('annual_pv_gen_kwh', 1), 1)) * 100), 99.8],
+        [s4['self_sufficiency'] * 100, s4['npc'] / 1e4,
+         s4['carbon_reduction_t'], s4['payback_years'],
+         min(100, (1 - s4.get('annual_grid_export_kwh', 0) /
+          max(s4.get('annual_pv_gen_kwh', 1), 1)) * 100), 99.0],
+    ])
+
+    criteria_labels = ['能源性', '经济性', '可靠性', '环境性']
+    indicator_criteria_map = [0, 1, 1, 1, 0, 2]
+
+    df = DecisionFramework()
+    result = df.evaluate(
+        schemes=schemes, indicators=indicators,
+        values=values, directions=directions,
+        criteria_labels=criteria_labels,
+        indicator_criteria_map=indicator_criteria_map,
+    )
+    result.print_summary()
+    result.save()
+
+    print(f"\n  推荐方案: {result.get_best_scheme()}")
+    return result
+
+
+def run_multi_scenario(opt, pv_cap, ess_cap, ess_pow):
+    """Step 6b: 多情景分析 (保守/基准/激进)"""
+    print("\n" + "=" * 60)
+    print("Step 6b: Multi-Scenario Analysis")
+    print("=" * 60)
+
+    scenario_results = {}
+    for sc_name in ['conservative', 'baseline', 'aggressive']:
+        print(f"  Running {sc_name} scenario...")
+        result = opt.evaluate_config_scenario(pv_cap, ess_cap, ess_pow, sc_name)
+        scenario_results[sc_name] = result
+        print(f"    NPC={result['npc_wan_yuan']:.1f}万元, "
+              f"SSR={result['self_sufficiency']:.1%}, "
+              f"Payback={result['payback_years']:.1f}yr")
+
+    return scenario_results
+
+
 def generate_all_figures(mc_scenarios, pv_gen, opt, opt_result, pareto_results,
-                         sensitivity_data, scheme_results, calendar_ctx=None):
-    """生成全部图表"""
+                         sensitivity_data, scheme_results, calendar_ctx=None,
+                         decision_result=None, scenario_results=None,
+                         pareto_nsga2=None):
+    """生成全部图表 (v5: 新增Fig8-10)"""
     print("\n" + "=" * 60)
     print("Generating Figures...")
     print("=" * 60)
@@ -249,13 +368,15 @@ def generate_all_figures(mc_scenarios, pv_gen, opt, opt_result, pareto_results,
     fig2_scenario_comparison(mc_scenarios)
     print("  [OK] fig2_scenario_comparison")
 
-    # 图3: 最优配置下的夏季晴天功率平衡
+    # 图3: 最优配置下的夏季晴天功率平衡 (含温度效应)
     pv_cap = opt_result['pv_capacity']
-    pv_profile = np.array(PV_COEFF['summer']) * pv_cap * WEATHER_COEFF['clear']
+    # 使用PVGenerator获取温度修正后的出力
+    temp_pv = PVGenerator(pv_capacity_kwp=pv_cap, seed=SEED, calendar_ctx=calendar_ctx)
+    pv_profile = temp_pv.generate_daily_profile('summer', 'clear')
     load_profile = opt.get_total_load('summer', 'workday', 'clear')
     op_day = opt.simulate_daily_operation(pv_profile, load_profile)
     fig3_power_balance(pv_profile, load_profile, op_day, 'summer', 'clear')
-    print("  [OK] fig3_power_balance")
+    print("  [OK] fig3_power_balance (with temperature effect)")
 
     # 图4
     fig4_pareto_frontier(pareto_results)
@@ -276,6 +397,22 @@ def generate_all_figures(mc_scenarios, pv_gen, opt, opt_result, pareto_results,
     monthly_load = np.ones(12) * opt_result['annual_load_kwh'] / 12
     fig7_monthly_energy_balance(monthly_pv, monthly_load)
     print("  [OK] fig7_monthly_energy_balance")
+
+    # --- v5 新增图表 ---
+    # 图8: TOPSIS决策框架
+    if decision_result is not None:
+        fig8_decision_topsis(decision_result)
+        print("  [OK] fig8_decision_topsis")
+
+    # 图9: 多情景对比
+    if scenario_results is not None:
+        fig9_scenario_comparison(scenario_results)
+        print("  [OK] fig9_scenario_comparison")
+
+    # 图10: NSGA-II 3D Pareto
+    if pareto_nsga2 is not None and len(pareto_nsga2) > 0:
+        fig10_pareto_3d(pareto_nsga2)
+        print("  [OK] fig10_pareto_3d")
 
     figures_dir = os.path.join(os.path.dirname(__file__), 'figures')
     print(f"\nAll figures saved to: {os.path.abspath(figures_dir)}")
@@ -304,6 +441,15 @@ def save_results(mc_scenarios, pv_metrics, opt_result, pareto_results):
             opt_summary[k] = float(v)
         elif isinstance(v, (int, float)):
             opt_summary[k] = v
+        elif isinstance(v, dict):
+            # 嵌套字典 (如subsidy_detail)
+            opt_summary[k] = {sk: (float(sv) if isinstance(sv, (np.floating, np.integer)) else sv)
+                              for sk, sv in v.items()}
+    # v5新增: 补贴和碳交易指标
+    for k in ['annual_carbon_revenue', 'subsidy', 'net_capital_cost',
+              'annual_ess_cycles']:
+        if k in opt_result and k not in opt_summary:
+            opt_summary[k] = float(opt_result[k]) if not isinstance(opt_result[k], dict) else opt_result[k]
     with open(os.path.join(OUTPUT_DIR, 'optimization_result.json'), 'w', encoding='utf-8') as f:
         json.dump(opt_summary, f, indent=2, ensure_ascii=False)
 
@@ -321,9 +467,19 @@ def save_results(mc_scenarios, pv_metrics, opt_result, pareto_results):
     print(f"\nResults saved to: {os.path.abspath(OUTPUT_DIR)}")
 
 
-def main():
+def main(mode='full'):
+    """主仿真流程
+
+    Parameters
+    ----------
+    mode : str
+        'fast' — 仅基础PSO (6步, 约2-5分钟)
+        'nsga2' — PSO + NSGA-II多目标 (约5-15分钟)
+        'full' — 全流程含决策框架 (约8-20分钟)
+    """
     print("=" * 60)
-    print("Highway Service Area PV-Storage-Charging Simulation")
+    print("Highway Service Area PV-Storage-Charging Simulation v5")
+    print(f"Mode: {mode}")
     print("=" * 60)
 
     # 创建统一日历上下文 (真实2025年日历 + Markov天气链)
@@ -331,18 +487,27 @@ def main():
     calendar_ctx.print_summary()
 
     # Step 1: Monte Carlo
-    mc_scenarios = run_monte_carlo(n_runs=5000)
+    mc_n_runs = 5000 if mode != 'fast' else 2000
+    mc_scenarios = run_monte_carlo(n_runs=mc_n_runs)
 
-    # Step 2: PV
+    # Step 2: PV (含温度效应)
     pv_gen, annual_pv, monthly_pv, pv_metrics = run_pv_synthesis(
         pv_capacity=500, calendar_ctx=calendar_ctx)
 
-    # Step 3: Optimization (with MC results)
+    # Step 3: PSO Optimization
     opt, opt_result, best_x = run_optimization(mc_scenarios, size='medium',
                                                 calendar_ctx=calendar_ctx)
 
-    # Step 4: Pareto
-    pareto_results = run_pareto_analysis(opt, n_samples=80)
+    # Step 3a: NSGA-II Multi-Objective (only for nsga2 / full modes)
+    pareto_nsga2 = None
+    nsga2_best = None
+    if mode in ('nsga2', 'full'):
+        pareto_nsga2, nsga2_best = run_nsga2_optimization(
+            opt, pop_size=60 if mode == 'nsga2' else 40,
+            n_gen=30 if mode == 'nsga2' else 20)
+
+    # Step 4: Pareto (PSO-based)
+    pareto_results = run_pareto_analysis(opt, n_samples=80 if mode != 'fast' else 40)
 
     # Step 5: Sensitivity
     sensitivity_data = run_sensitivity(opt)
@@ -350,13 +515,39 @@ def main():
     # Step 6: Scheme comparison
     scheme_results = run_scheme_comparison(opt)
 
-    # Save
+    # Step 6a: AHP-TOPSIS Decision Framework
+    decision_result = None
+    scenario_results = None
+    if mode == 'full':
+        decision_result = run_decision_framework(opt)
+        # Step 6b: Multi-scenario analysis
+        scenario_results = run_multi_scenario(opt,
+            opt_result['pv_capacity'],
+            opt_result['ess_capacity'],
+            opt_result['ess_power'])
+
+    # Save results
     save_results(mc_scenarios, pv_metrics, opt_result, pareto_results)
 
-    # Figures
+    # Generate all figures
     generate_all_figures(mc_scenarios, pv_gen, opt, opt_result,
                          pareto_results, sensitivity_data, scheme_results,
-                         calendar_ctx=calendar_ctx)
+                         calendar_ctx=calendar_ctx,
+                         decision_result=decision_result,
+                         scenario_results=scenario_results,
+                         pareto_nsga2=pareto_nsga2)
+
+    # v5 增强输出
+    print("\n" + "=" * 60)
+    print("V5 Enhanced Economic Metrics")
+    print("=" * 60)
+    if 'annual_carbon_revenue' in opt_result:
+        print(f"  Annual Carbon Revenue: {opt_result['annual_carbon_revenue']:.0f} yuan")
+    if 'subsidy' in opt_result:
+        print(f"  Total Subsidy: {opt_result['subsidy']:.0f} yuan")
+    if 'net_capital_cost' in opt_result:
+        print(f"  Net Capital Cost: {opt_result['net_capital_cost']/1e4:.1f} wan yuan")
+    print(f"  Carbon Price: {70:.0f} yuan/tCO2 (CCER 2024-2025 avg)")
 
     print("\n" + "=" * 60)
     print("Simulation Complete!")
@@ -364,4 +555,11 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(
+        description='Highway Service Area PV-Storage-Charging Simulation v5')
+    parser.add_argument('--mode', type=str, default='fast',
+                       choices=['fast', 'nsga2', 'full'],
+                       help='Simulation mode: fast (PSO only), '
+                            'nsga2 (PSO + NSGA-II), full (all modules)')
+    args = parser.parse_args()
+    main(mode=args.mode)
