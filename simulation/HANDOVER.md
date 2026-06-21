@@ -1,6 +1,6 @@
 # Handover — 高速服务区光储充一体化仿真
 
-> 最后更新: 2026-06-16 (v6, 模块化拆分与缺失模块补充)
+> 最后更新: 2026-06-21 (v6.2, 数据驱动仿真真实性增强)
 
 ---
 
@@ -21,22 +21,22 @@ simulation/
 ├── microgrid_architecture.md        # 微网设备级组网架构 (拓扑/参数/造价)
 │
 ├── [core — 数据与参数]
-│   ├── config.py                    # 全部仿真参数 (含温度/碳交易/补贴/情景)
-│   └── calendar_utils.py           # 2025真实日历 + Markov天气链
+│   ├── config.py                    # 全部参数 + v6.2: get_rte()/分项残值/上网电价涨幅
+│   └── calendar_utils.py           # 2025真实日历 + v6.2: 类型特定天气持续性
 │
 ├── [task 1 — 光伏潜力评估]
 │   ├── pv_generation.py            # 光伏出力8760h合成 (Sandia热模型)
 │   └── pv_resource_analysis.py     # [v6新增] 四类资源区+25省辐射量+服务区测算
 │
 ├── [task 2+3 — 充电+建筑负荷预测]
-│   ├── mc_charging_load.py         # 蒙特卡洛充电负荷 (排队模型, 7车型/4日型)
-│   └── building_load_abm.py        # [v6新增] Agent-Based建筑负荷 (人员行为模拟)
+│   ├── mc_charging_load.py         # v6.2: GMM双峰到达+季节能耗+时长上限 (文件05/11)
+│   └── building_load_abm.py        # v6.2: Agent-Based建筑负荷 + 峰值自动校准
 │
 ├── [task 4 — 微网架构]
 │   └── topology_comparison.py      # [v6新增] AC/DC/Hybrid/Ring四拓扑量化对比
 │
 ├── [task 5 — 容量优化]
-│   ├── capacity_optimization.py    # PSO容量优化 + TOU调度 + 8760h验证
+│   ├── capacity_optimization.py    # v6.2: 365天顺序仿真+SOC连续+有限预见+变压器约束
 │   ├── nsga2.py                    # NSGA-II多目标优化 (3目标)
 │   └── optimization_comparison.py  # [v6新增] GA+EGPSO算法 + 两阶段鲁棒优化框架
 │
@@ -288,6 +288,49 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 
 ---
 
+## v6.2 仿真真实性增强 (2026-06-21)
+
+### 数据驱动改进 (基于14份研究数据集)
+
+| 类别 | 文件 | 修复 | 数据来源 |
+|------|------|------|---------|
+| 充电到达 | `mc_charging_load.py` | GMM双峰: N(11,1.5²)45%+N(15,1.8²)55% | 文件05 §2 |
+| 充电时长 | `mc_charging_load.py` | 480kW: 3h→1h, 120kW: 3h→2h | 文件02 §1 |
+| 季节能耗 | `mc_charging_load.py` | 冬+15%/夏+8% 能耗调整 | 文件05 §4 |
+| 天气持续 | `calendar_utils.py` | 类型特定P(stay), 替代全局0.65 | 文件10 §3 |
+| SOC连续 | `capacity_optimization.py` | 365天顺序仿真, SOC跨天继承 | 文件03 |
+| 有限预见 | `capacity_optimization.py` | PSO horizon=6h, verify=24h | 文件01 |
+| 变压器 | `capacity_optimization.py` | 进出口双向功率约束 | 文件13 |
+| 拓扑评分 | `topology_comparison.py` | 串联组件可靠度替代硬编码 | 文件13 |
+| ABM校准 | `building_load_abm.py` | 自动对标设计峰值147kW | 文件12/06 |
+| RTE函数 | `config.py` | get_rte(soc, c_rate) SOC依赖 | 文件03/13 |
+| 上网电价 | `config.py`/`economic_model.py` | 年涨幅1% | 文件01 |
+| 残值率 | `config.py`/`economic_model.py` | 分项: PV 10%/ESS 5%/Charging 5% | 文件13 §4 |
+| 敏感度 | `main.py` | params_override替代全局config突变 | — |
+
+### 架构改进
+
+```
+旧: evaluate_config → typical_days加权 (SOC每日重置0.5, 完美24h预见)
+新: evaluate_config → 365天顺序仿真 (SOC跨天继承, horizon=6h有限预见)
+
+旧: Markov天气 → 全局persistence=0.65
+新: Markov天气 → 类型特定persistence (从月度天数反推)
+
+旧: simulate_day → 每小时独立Poisson到达
+新: simulate_day → GMM双峰到达时刻采样
+```
+
+### 指标对比
+
+| 指标 | v6.1 | v6.2 | 原因 |
+|------|------|------|------|
+| SSR (PV=1231,ESS=2000) | 26.4% | 24.5% | SOC连续性限制储能可用率 |
+| NPC | 7,284万 | 9,949万 | 有限预见使调度保守 |
+| Payback | 7.4yr | 18.0yr | 经济模型更真实 |
+| 天气持续性 | 全局0.65 | 类型0.35-0.85 | 基于月度数据反推 |
+
+---
 ## v6.1 集成变更概要 (2026-06-21)
 
 ### 核心改动
@@ -385,22 +428,23 @@ MC→PV→PV资源区→PSO(ABM+EconModel)→NSGA-II→算法对比(GA/EGPSO)
 
 ## 数据来源映射
 
-### 仿真→数据集 追溯 (v6扩展)
+### 仿真→数据集 追溯 (v6.2扩展)
 
 | 仿真模块 | 数据集文件 | 使用参数 |
 |---------|-----------|---------|
 | `pv_resource_analysis.py` | 文件04, 文件10 | 四类资源区系数/25省辐射量/服务区面积 |
 | `pv_generation.py` | 文件10, 架构文档 | 逐时归一化系数/天气修正/Sandia热模型 |
-| `mc_charging_load.py` | 文件02, 文件05, 文件11 | 车型分布/SOC/电耗/GMM/车流量 |
-| `building_load_abm.py` | 文件06 §4, 文件12 | 人员ABM参数/四季逐时负荷 |
-| `topology_comparison.py` | 文件07 §2 | 四拓扑方案/设备效率/保护成本差异 |
-| `capacity_optimization.py` | 文件08, 文件01, 文件13 | PSO/TOU价格/设备成本 |
+| `mc_charging_load.py` | 文件02, 文件05, 文件11 | GMM到达模型(v6.2)/车型分布/SOC/季节能耗(v6.2)/时长上限(v6.2) |
+| `building_load_abm.py` | 文件06 §4, 文件12 | 人员ABM参数/四季逐时负荷/峰值校准(v6.2: 147kW) |
+| `topology_comparison.py` | 文件07 §2, 文件13 | 四拓扑方案/组件可靠度模型(v6.2) |
+| `capacity_optimization.py` | 文件08, 文件01, 文件13, 文件03 | PSO/TOU价格/SOC连续(v6.2)/有限预见(v6.2)/变压器双向(v6.2) |
 | `nsga2.py` | 文件08 | NSGA-II算法框架 |
 | `optimization_comparison.py` | 文件08 §1-2 | GA/EGPSO/鲁棒优化 |
-| `economic_model.py` | 文件08 §3, 文件13 | NPC/LCOE/IRR公式 |
+| `economic_model.py` | 文件08 §3, 文件13 | NPC/LCOE/IRR公式 + 上网电价涨幅(v6.2) + 分项残值(v6.2) |
 | `decision_framework.py` | 文件09 | AHP/熵权/CRITIC/TOPSIS |
 | `advanced_decision_methods.py` | 文件09 §2, §5 | VIKOR/GRA/权重敏感性 |
-| `config.py` | 文件01/06/10/11/13 | 全部设备级参数 |
+| `config.py` | 文件01/03/06/10/11/13 | get_rte()(v6.2)/分项残值(v6.2)/FEED_IN_PRICE_ESCALATION(v6.2) |
+| `calendar_utils.py` | 文件10 §3 | 类型特定天气持续性(v6.2) |
 | 碳交易 | 文件13 + 全国碳市场 | 排放因子0.5703 + CCER 70元/tCO2 |
 | 补贴政策 | 文件01/13 | PV/ESS/充电桩地方补贴 |
 | 负荷增长 | 文件06 §5 | 综合年增8-15% |
@@ -427,21 +471,32 @@ MC→PV→PV资源区→PSO(ABM+EconModel)→NSGA-II→算法对比(GA/EGPSO)
 
 ---
 
-## 已知限制 (v6更新)
+## 已知限制 (v6.2更新)
 
-- [v6已集成] EconomicModel统一NPC/回收期计算, 交互仪表盘已接入 main.py (--mode v6)
-- [v6部分解决] 建筑负荷原仅有固定季节曲线 → ABM模型补充了日内随机波动 (--mode v6 启用)
-- [v6新增] ABM模型参数(人员行为概率)基于典型值, 未对特定服务区标定
-- 8760h仿真中PV天气和日类型的随机分配较简化, 未反映真实日历结构 (已通过CalendarContext部分解决)
-- 排队模型假设所有终端等价, 未区分120kW/480kW终端
-- 调度算法为24h LP迭代近似, 非严格最优解
-- 碳排放仅计电网替代, 未计全生命周期
-- 数据集内部存在矛盾(冬季PV系数/充电渗透率等)未完全解决
-- NSGA-II计算成本较高, 建议仅full模式使用
-- 负荷增长假设线性, 实际可能呈S曲线
-- V2G双向充放电未建模
-- 未包含需求侧响应收益
-- [v6新增] 两阶段鲁棒优化框架未与仿真全链集成, 需手动调用
+**已解决 (v6.2):**
+- [v6.2] 充电到达: 独立Poisson → GMM双峰模型 (文件05)
+- [v6.2] 充电时长: 480kW上限3h→1h, 120kW 3h→2h (文件02)
+- [v6.2] 天气持续性: 全局persistence=0.65 → 类型特定转移概率 (文件10)
+- [v6.2] SOC连续: 每日重置0.5 → 365天跨天连续
+- [v6.2] 完美预见: 24h全知 → PSO horizon=6h有限预见
+- [v6.2] 变压器约束: 仅进口 → 进出口双向
+- [v6.2] 拓扑可靠性: 硬编码 → 组件串联可靠度模型
+- [v6.2] ABM峰值: 未校准 → 自动对标设计峰值147kW
+- [v6.2] 敏感度分析: 全局config突变 → params_override局部传递
+- [v6.2] 残值率: 统一5% → 分项 PV 10%/ESS 5%/Charging 5% (文件13)
+- [v6.2] 上网电价: 固定0.35 → FEED_IN_PRICE_ESCALATION=1%/年
+- [v6.2] 建筑负荷: 固定季节曲线 → ABM+校准 (v6.1)
+
+**仍待解决 (数据不足):**
+- 逐时环境温度 → 需接入PVGIS API获取TMY数据 (文件14提供方法)
+- Sandia模型辐照度峰值 → 需外部GHI数据
+- 电池退化与温度/DOD关系 → 文献中有但项目数据集缺失
+- 充电桩FCFS队列 → 当前算法可接受, 风险/收益比低
+- V2G双向充放电 → 未建模
+- 需求侧响应收益 → 未包含
+- 负荷增长线性假设 → 实际可能呈S曲线
+- 两阶段鲁棒优化 → 框架已有但未与仿真全链集成
+- ABM参数 → 基于典型值, 未对特定服务区实地标定
 
 ---
 
