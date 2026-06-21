@@ -48,9 +48,9 @@ simulation/
 │   └── economic_model.py           # [v6新增] NPC/LCOE/IRR/PBP/ROI/BCR独立经济模型
 │
 ├── [output — 可视化]
-│   ├── visualization.py            # 图表生成 (10张)
+│   ├── visualization.py            # 图表生成 (13张, v6新增3张)
 │   ├── microgrid_frontend.py       # SCADA风格HTML监控
-│   └── interactive_dashboard.py    # [WIP] Plotly交互式看板 (未完成)
+│   └── interactive_dashboard.py    # Plotly交互式仪表盘 (487行, 已完成)
 │
 ├── main.py                         # 主程序入口 (--mode fast/nsga2/full)
 ├── results/                        # JSON数值结果
@@ -278,12 +278,38 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 
 ### 待完成
 
-| 文件 | 说明 |
+| 项目 | 说明 |
 |------|------|
-| `interactive_dashboard.py` | Plotly交互式看板，仅有部分实现(~50行可见)，需完成 |
+| 两阶段鲁棒优化全链集成 | `optimization_comparison.py` 框架已有, 需在 main.py 中接入实际仿真数据 |
+| ABM模型参数标定 | 人员行为概率基于典型值, 未对特定服务区实地标定 |
+| V2G双向充放电 | 未建模 |
+| 排队模型终端区分 | 未区分120kW/480kW终端 |
+| 需求侧响应收益 | 未包含 |
 
 ---
 
+## v6.1 集成变更概要 (2026-06-21)
+
+### 核心改动
+
+| 文件 | 变更 | 说明 |
+|------|------|------|
+| `main.py` | 新增 `--mode v6` 全流程 | 串联全部16模块, 12步管道 |
+| `capacity_optimization.py` | 集成EconomicModel + ABM | `use_econ_model`/`use_abm` 参数, 旧方法保留+废弃标注 |
+| `economic_model.py` | 新增 `npc_from_aggregates()` | 热路径桥接方法, 2000次/PSO运行可用 |
+| `interactive_dashboard.py` | `build_8760h_data()` 参数化 | 接受已有opt实例, 避免重复创建 |
+| `visualization.py` | 新增 fig11/12/13 | 拓扑雷达图/经济瀑布图/决策一致性图 |
+| `HANDOVER.md` | 文档修正 | 更新完成度, 移除过时WIP条目 |
+
+### v6 全流程 (--mode v6)
+
+```
+MC→PV→PV资源区→PSO(ABM+EconModel)→NSGA-II→算法对比(GA/EGPSO)
+→Pareto→敏感性→四方案→TOPSIS→VIKOR/GRA/Borda→拓扑对比
+→经济全生命周期→仪表盘→图表(fig1-fig13)
+```
+
+---
 ## v5 变更概要 (2026-06-16)
 
 ### 新增模块 (2个)
@@ -395,12 +421,16 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 | Fig8 | AHP-TOPSIS决策结果 (方案贴近度) | 柱状图 | **v5新增** |
 | Fig9 | 多情景对比 (保守/基准/激进) | 散点图 | **v5新增** |
 | Fig10 | NSGA-II三维Pareto前沿 (NPC×SSR×Carbon) | 3D散点 | **v5新增** |
+| Fig11 | 四拓扑多维度对比雷达图 | 雷达图 | **v6新增** |
+| Fig12 | CAPEX分项+关键经济指标 | 饼图+柱图 | **v6新增** |
+| Fig13 | TOPSIS/VIKOR/GRA 三方法一致性 | 分组柱图 | **v6新增** |
 
 ---
 
 ## 已知限制 (v6更新)
 
-- [v6部分解决] 建筑负荷原仅有固定季节曲线 → ABM模型补充了日内随机波动
+- [v6已集成] EconomicModel统一NPC/回收期计算, 交互仪表盘已接入 main.py (--mode v6)
+- [v6部分解决] 建筑负荷原仅有固定季节曲线 → ABM模型补充了日内随机波动 (--mode v6 启用)
 - [v6新增] ABM模型参数(人员行为概率)基于典型值, 未对特定服务区标定
 - 8760h仿真中PV天气和日类型的随机分配较简化, 未反映真实日历结构 (已通过CalendarContext部分解决)
 - 排队模型假设所有终端等价, 未区分120kW/480kW终端
@@ -412,7 +442,6 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 - V2G双向充放电未建模
 - 未包含需求侧响应收益
 - [v6新增] 两阶段鲁棒优化框架未与仿真全链集成, 需手动调用
-- [v6新增] interactive_dashboard.py未完成
 
 ---
 

@@ -14,6 +14,17 @@ plt.rcParams['axes.unicode_minus'] = False
 
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'figures')
 
+# 供 v6 图表使用的配置常量
+_FIXED_COST_TOTAL = None
+
+
+def _get_fixed_cost():
+    global _FIXED_COST_TOTAL
+    if _FIXED_COST_TOTAL is None:
+        from config import FIXED_COST_TOTAL
+        _FIXED_COST_TOTAL = FIXED_COST_TOTAL
+    return _FIXED_COST_TOTAL
+
 
 def ensure_output_dir():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -409,6 +420,191 @@ def fig10_pareto_3d(pareto_solutions, save=True):
         fig.savefig(os.path.join(OUTPUT_DIR, 'fig10_pareto_3d.pdf'),
                     dpi=300, bbox_inches='tight')
         fig.savefig(os.path.join(OUTPUT_DIR, 'fig10_pareto_3d.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
+# ============================================================
+# v6 新增图表
+# ============================================================
+
+def fig11_topology_radar(topology_names, soi_scores, save=True):
+    """v6: 四拓扑多维度对比雷达图
+
+    Parameters
+    ----------
+    topology_names : list of str
+        拓扑名称 ['交流AC', '直流DC', '混合Hybrid', '链式Ring']
+    soi_scores : np.ndarray (4, n_dims)
+        各拓扑在各维度的归一化得分
+    """
+    ensure_output_dir()
+    n_dims = soi_scores.shape[1]
+    dim_labels = ['综合效率', '投资经济性', '技术成熟度', '可靠性',
+                   '可再生能源\n利用率', '可扩展性']
+    if n_dims < 6:
+        dim_labels = dim_labels[:n_dims]
+
+    angles = np.linspace(0, 2 * np.pi, n_dims, endpoint=False).tolist()
+    angles += angles[:1]
+
+    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True))
+    colors = ['#2196F3', '#4CAF50', '#FF9800', '#9C27B0']
+    linestyles = ['-', '--', '-.', ':']
+
+    for i, name in enumerate(topology_names):
+        values = soi_scores[i].tolist()
+        values += values[:1]
+        ax.fill(angles, values, alpha=0.08, color=colors[i])
+        ax.plot(angles, values, 'o-', linewidth=2, label=name,
+                color=colors[i], linestyle=linestyles[i], markersize=5)
+
+    ax.set_xticks(angles[:-1])
+    ax.set_xticklabels(dim_labels, fontsize=10)
+    ax.set_ylim(0, 1.05)
+    ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
+    ax.set_yticklabels(['0.2', '0.4', '0.6', '0.8', '1.0'], fontsize=8, color='gray')
+    ax.set_title('微网拓扑架构多维度对比', fontsize=14, fontweight='bold', pad=25)
+    ax.legend(loc='upper right', bbox_to_anchor=(1.3, 1.1), fontsize=10)
+    ax.grid(True, alpha=0.3)
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig11_topology_radar.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig11_topology_radar.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
+def fig12_economic_breakdown(econ_model, npc_val=None, lcoe_val=None,
+                              pbp_val=None, irr_val=None, save=True):
+    """v6: CAPEX/NPC/LCOE 经济指标瀑布图
+
+    Parameters
+    ----------
+    econ_model : EconomicModel
+        经济模型实例
+    npc_val, lcoe_val, pbp_val, irr_val : float or None
+        关键经济指标, None则跳过
+    """
+    ensure_output_dir()
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+
+    # Left: CAPEX breakdown pie
+    capex_items = {
+        '光伏系统': econ_model.capex_pv() / 1e4,
+        '储能系统': econ_model.capex_ess() / 1e4,
+        '充电设施': econ_model.capex_charging() / 1e4,
+        '固定投资': _get_fixed_cost() / 1e4,
+    }
+    colors = ['#FFB74D', '#4FC3F7', '#81C784', '#E0E0E0']
+    labels = list(capex_items.keys())
+    sizes = list(capex_items.values())
+    wedges, texts, autotexts = ax1.pie(sizes, labels=labels, colors=colors,
+                                        autopct='%1.1f%%', startangle=90,
+                                        textprops={'fontsize': 10})
+    ax1.set_title(f'CAPEX 分项构成\n(总: {sum(sizes):.1f} 万元)', fontsize=12,
+                  fontweight='bold')
+
+    # Right: Key indicators bar
+    if npc_val is not None and lcoe_val is not None:
+        indicators = {
+            'NPC\n(万元)': npc_val / 1e4,
+            'LCOE\n(×100元/kWh)': lcoe_val * 100,
+            '动态回收期\n(年)': pbp_val if pbp_val and pbp_val < 99 else 0,
+            'IRR\n(%)': (irr_val * 100) if irr_val else 0,
+        }
+        bar_colors = ['#FF7043', '#42A5F5', '#66BB6A', '#AB47BC']
+        bars = ax2.bar(range(len(indicators)), list(indicators.values()),
+                       color=bar_colors, edgecolor='white', linewidth=1.5)
+        ax2.set_xticks(range(len(indicators)))
+        ax2.set_xticklabels(list(indicators.keys()), fontsize=10)
+        ax2.set_title('关键经济指标', fontsize=12, fontweight='bold')
+        ax2.grid(axis='y', alpha=0.3)
+        for bar, val in zip(bars, indicators.values()):
+            ax2.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.3,
+                     f'{val:.1f}', ha='center', fontsize=9, fontweight='bold')
+
+    subsidy = econ_model.subsidy_total() / 1e4
+    fig.suptitle(f'全生命周期经济评估 [{econ_model.scenario}情景]  '
+                 f'补贴: {subsidy:.1f}万元',
+                 fontsize=13, fontweight='bold')
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig12_economic_breakdown.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig12_economic_breakdown.png'),
+                    dpi=150, bbox_inches='tight')
+    return fig
+
+
+def fig13_decision_cross_validation(decision_result, mdm, save=True):
+    """v6: TOPSIS/VIKOR/GRA 三方法决策一致性对比
+
+    Parameters
+    ----------
+    decision_result : DecisionResult
+        AHP-TOPSIS 结果
+    mdm : MultiMethodDecision
+        VIKOR/GRA 结果 (已调用 run_all())
+    """
+    ensure_output_dir()
+
+    schemes = decision_result.schemes
+    n = len(schemes)
+    x = np.arange(n)
+    width = 0.25
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # TOPSIS scores (normalize to 0-1)
+    topsis_scores = np.array(decision_result.topsis['scores'])
+    topsis_norm = topsis_scores / max(topsis_scores.max(), 0.001)
+
+    # VIKOR Q (invert: lower Q = better, convert to 0-1 score)
+    vikor_Q = np.array(mdm.vikor_result['Q'])
+    q_max = max(vikor_Q.max(), 0.001)
+    vikor_score = 1 - vikor_Q / q_max  # invert so higher = better
+
+    # GRA degree
+    gra_score = np.array(mdm.gra_result['grey_degree'])
+
+    bars1 = ax.bar(x - width, topsis_norm, width, label='TOPSIS (AHP+熵权+CRITIC)',
+                   color='#42A5F5', edgecolor='white')
+    bars2 = ax.bar(x, vikor_score, width, label='VIKOR (折中排序)',
+                   color='#FF7043', edgecolor='white')
+    bars3 = ax.bar(x + width, gra_score, width, label='GRA (灰色关联度)',
+                   color='#66BB6A', edgecolor='white')
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(schemes, fontsize=10)
+    ax.set_ylabel('归一化得分 / 关联度', fontsize=11)
+    ax.set_title('多方法决策一致性验证: TOPSIS vs VIKOR vs GRA', fontsize=14,
+                 fontweight='bold')
+    ax.legend(loc='upper left', fontsize=10)
+    ax.set_ylim(0, 1.15)
+    ax.grid(axis='y', alpha=0.3)
+
+    # 标注最优方案
+    best_idx = mdm.get_best_by_consensus()[0]
+    ax.annotate('Borda共识最优', xy=(best_idx, 1.05),
+                fontsize=10, color='red', fontweight='bold',
+                ha='center', va='bottom',
+                arrowprops=dict(arrowstyle='->', color='red', lw=1.5))
+
+    # 一致性标注
+    n_agree = sum(1 for i in range(n)
+                  if np.argmax([topsis_norm[i], vikor_score[i], gra_score[i]]) ==
+                     np.argmax([topsis_norm[i], vikor_score[i], gra_score[i]]))
+    ax.text(0.98, 0.95, f'方法一致性: {n_agree}/{n} 相同排序',
+            transform=ax.transAxes, fontsize=10, ha='right',
+            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+    if save:
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig13_decision_cross_validation.pdf'),
+                    dpi=300, bbox_inches='tight')
+        fig.savefig(os.path.join(OUTPUT_DIR, 'fig13_decision_cross_validation.png'),
                     dpi=150, bbox_inches='tight')
     return fig
 

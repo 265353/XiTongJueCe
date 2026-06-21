@@ -353,6 +353,130 @@ class EconomicModel:
     # 情景演化经济指标
     # ============================================================
 
+    def update_config(self, pv_cap=None, ess_e=None, ess_p=None,
+                       n_piles_120=None, n_piles_480=None, scenario=None):
+        """快速更新配置 (供优化循环复用同一实例)"""
+        if pv_cap is not None:
+            self.pv_cap = pv_cap
+        if ess_e is not None:
+            self.ess_e = ess_e
+        if ess_p is not None:
+            self.ess_p = ess_p
+        if n_piles_120 is not None:
+            self.n_piles_120 = n_piles_120
+        if n_piles_480 is not None:
+            self.n_piles_480 = n_piles_480
+        if scenario is not None:
+            self.scenario = scenario
+            self.sc_params = SCENARIOS.get(scenario, SCENARIOS['baseline'])
+        return self
+
+    def npc_from_aggregates(self, annual_grid_cost, annual_ess_cycles,
+                             annual_carbon_revenue=0.0, subsidy=0.0,
+                             capex_detail=None, scenario_params=None):
+        """热路径NPC — 聚合年值输入, 供PSO/GA优化循环 (~2000次调用)
+
+        与 _calculate_npc_detailed 对标, 但使用 EconomicModel 自身 CAPEX 方法。
+        若传入 capex_detail 则优先使用 (兼容 capacity_optimizer 的 capex dict)。
+
+        Parameters
+        ----------
+        annual_grid_cost : float
+            年网购电成本 (元)
+        annual_ess_cycles : float
+            年储能等效循环次数
+        annual_carbon_revenue : float
+            年碳交易收入 (元)
+        subsidy : float
+            补贴金额 (元)
+        capex_detail : dict or None
+            若为None, 使用 self.capex_pv/ess/charging 计算
+        scenario_params : dict or None
+            演化情景参数, None则使用当前情景
+        """
+        sp = scenario_params if scenario_params is not None else {
+            'load_growth_rate': self.sc_params.get('load_growth_rate', 0.0),
+            'grid_price_escalation': self.sc_params.get('grid_price_escalation', 0.0),
+            'carbon_price_growth': self.sc_params.get('carbon_price_growth', 0.0),
+            'discount_rate': self.sc_params.get('discount_rate', DISCOUNT_RATE),
+        }
+
+        if capex_detail is not None:
+            capital = capex_detail['total'] - subsidy
+            om_pv = capex_detail['pv_subtotal'] * OM_RATE['pv']
+            om_ess = capex_detail['ess_subtotal'] * OM_RATE['ess']
+            om_charging = capex_detail['charging_subtotal'] * OM_RATE['charging']
+        else:
+            capital = self.capex_after_subsidy()
+            om_pv = self.capex_pv() * OM_RATE['pv']
+            om_ess = self.capex_ess() * OM_RATE['ess']
+            om_charging = self.capex_charging() * OM_RATE['charging']
+
+        om_annual = om_pv + om_ess + om_charging
+
+        annual_degradation = (ESS_CAPACITY_FADE_CALENDAR +
+                              ESS_CAPACITY_FADE_PER_CYCLE * annual_ess_cycles)
+        ess_degrade_factor = 1.0
+
+        dr = sp.get('discount_rate', DISCOUNT_RATE)
+        lgr = sp.get('load_growth_rate', 0.0)
+        gpe = sp.get('grid_price_escalation', 0.0)
+        cpg = sp.get('carbon_price_growth', 0.0)
+
+        npv_grid_cost = 0.0
+        npv_carbon_rev = 0.0
+
+        for yr in range(1, PROJECT_LIFE + 1):
+            load_factor = (1.0 + lgr) ** (yr - 1)
+            price_factor = (1.0 + gpe) ** (yr - 1)
+            degrade_penalty = 1.0 + (1.0 - ess_degrade_factor) * 0.3
+
+            yr_grid_cost = (annual_grid_cost * degrade_penalty
+                           * load_factor * price_factor)
+            npv_grid_cost += yr_grid_cost / (1 + dr) ** yr
+
+            carbon_factor = (1.0 + cpg) ** (yr - 1)
+            yr_carbon_rev = annual_carbon_revenue * carbon_factor
+            npv_carbon_rev += yr_carbon_rev / (1 + dr) ** yr
+
+            ess_degrade_factor = max(0.60, ess_degrade_factor - annual_degradation)
+
+        npv_om = om_annual * sum(1.0 / (1 + dr) ** y
+                                 for y in range(1, PROJECT_LIFE + 1))
+
+        # 更换成本
+        replacement_cost = 0
+        if capex_detail is not None:
+            if LIFESPAN['pv_inverter'] < PROJECT_LIFE:
+                rep_year = LIFESPAN['pv_inverter']
+                replacement_cost += (capex_detail['pv_inverter'] * REPLACEMENT['inverter'] /
+                                     (1 + dr) ** rep_year)
+            if self.ess_e > 0 and LIFESPAN['ess_battery'] < PROJECT_LIFE:
+                rep_year = LIFESPAN['ess_battery']
+                replacement_cost += (capex_detail['ess_battery'] * REPLACEMENT['ess_battery'] /
+                                     (1 + dr) ** rep_year)
+            if self.ess_p > 0 and LIFESPAN['ess_pcs'] < PROJECT_LIFE:
+                rep_year = LIFESPAN['ess_pcs']
+                replacement_cost += (capex_detail['ess_pcs'] * REPLACEMENT['pcs'] /
+                                     (1 + dr) ** rep_year)
+            if LIFESPAN['charging_pile'] < PROJECT_LIFE:
+                rep_year = LIFESPAN['charging_pile']
+                replacement_cost += (capex_detail['charging_subtotal'] * REPLACEMENT['charging'] /
+                                     (1 + dr) ** rep_year)
+            if LIFESPAN['ems_hw'] < PROJECT_LIFE:
+                ems_hw_cost = capex_detail['fixed']['ems'] * 0.4
+                for yr in [5, 10, 15]:
+                    if yr <= PROJECT_LIFE:
+                        replacement_cost += (ems_hw_cost * REPLACEMENT['ems_hw'] /
+                                             (1 + dr) ** yr)
+        else:
+            for year, cost, _ in self.replacement_schedule():
+                replacement_cost += cost / (1 + dr) ** year
+
+        salvage = capital * RESIDUAL_RATE / (1 + dr) ** PROJECT_LIFE
+
+        return capital + npv_om + npv_grid_cost + replacement_cost - salvage - npv_carbon_rev
+
     def npc_with_scenario(self, annual_grid_import_kwh, annual_tou_prices,
                           annual_self_consumed_kwh, annual_grid_export_kwh=0,
                           scenario_name='baseline'):

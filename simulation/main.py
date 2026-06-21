@@ -1,6 +1,6 @@
 """
-主程序 — 高速服务区光储充一体化仿真全流程 (v5)
-运行: python main.py [--mode full|fast|nsga2]
+主程序 — 高速服务区光储充一体化仿真全流程 (v6)
+运行: python main.py [--mode fast|nsga2|full|v6]
 """
 import numpy as np
 import json
@@ -21,10 +21,12 @@ from visualization import (
     fig7_monthly_energy_balance,
     fig8_decision_topsis, fig9_scenario_comparison,
     fig10_pareto_3d,
+    fig11_topology_radar, fig12_economic_breakdown,
+    fig13_decision_cross_validation,
 )
 from config import (
     SERVICE_AREA_CONFIG, PV_COEFF, WEATHER_COEFF,
-    PV_AREA_RATIO,
+    PV_AREA_RATIO, SELF_SUFFICIENCY_MIN, PROJECT_LIFE,
 )
 from decision_framework import DecisionFramework
 from nsga2 import NSGA2, print_pareto_summary, save_pareto_results
@@ -474,6 +476,299 @@ def save_results(mc_scenarios, pv_metrics, opt_result, pareto_results):
     print(f"\nResults saved to: {os.path.abspath(OUTPUT_DIR)}")
 
 
+# ============================================================
+# v6 新增流程函数
+# ============================================================
+
+def run_pv_resource_analysis(area_size='medium', zone='III'):
+    """v6 Step 2a: 光伏资源区评估报告"""
+    print("\n" + "=" * 60)
+    print("Step 2a: PV Resource Zone Analysis (v6)")
+    print("=" * 60)
+    from pv_resource_analysis import (
+        PVResourceAnalyzer, compare_all_zones, compute_service_area_pv_potential
+    )
+    compare_all_zones(area_size)
+    analyzer = PVResourceAnalyzer(zone=zone, area_size=area_size, pv_capacity_kwp=1231)
+    analyzer.print_potential_summary()
+    return analyzer
+
+
+def run_topology_comparison(area_size='medium', pv_cap=1231, ess_cap=2000, ess_pow=1000):
+    """v6 Step 6c: 微网拓扑架构对比"""
+    print("\n" + "=" * 60)
+    print("Step 6c: Topology Architecture Comparison (v6)")
+    print("=" * 60)
+    from topology_comparison import TopologyAnalyzer
+    ta = TopologyAnalyzer(area_size, pv_cap, ess_cap, ess_pow)
+    ta.print_comparison()
+    topo_names, topo_scores = ta.get_soi_scores()
+    return ta, topo_names, topo_scores
+
+
+def run_algorithm_comparison(opt):
+    """v6 Step 3b: GA vs EGPSO 算法基准测试"""
+    print("\n" + "=" * 60)
+    print("Step 3b: Algorithm Benchmark (v6)")
+    print("=" * 60)
+    from optimization_comparison import AlgorithmBenchmark
+
+    def evaluator(x):
+        pv, ess_e, ess_p = x[0], x[1], x[2]
+        if ess_e < 10:
+            ess_e = 0; ess_p = 0
+        ess_p = min(ess_p, max(ess_e * 0.5, 0.1))
+        result = opt.evaluate_config(pv, ess_e, ess_p)
+        npc_val = result['npc']
+        ssr = result['self_sufficiency']
+        penalty = 0
+        if ssr < SELF_SUFFICIENCY_MIN:
+            penalty += (SELF_SUFFICIENCY_MIN - ssr) * npc_val * 2.0
+        return npc_val + penalty
+
+    max_pv = opt.area_config['pv_area_m2'] / PV_AREA_RATIO
+    bounds = np.array([[50, max_pv], [0, 3000], [0, 1000]])
+
+    bench = AlgorithmBenchmark(evaluator, bounds, seed=SEED)
+    results = bench.run_comparison(['GA', 'EGPSO'], n_runs=2)
+    bench.print_comparison(results)
+    return results
+
+
+def run_cross_validation(schemes, indicator_names, values, directions,
+                          weights=None, criteria_labels=None):
+    """v6 Step 6b: VIKOR/GRA/Borda 多方法交叉验证"""
+    print("\n" + "=" * 60)
+    print("Step 6b: Multi-Method Decision Cross-Validation (v6)")
+    print("=" * 60)
+    from advanced_decision_methods import MultiMethodDecision
+    mdm = MultiMethodDecision(schemes, indicator_names, values,
+                               directions, weights, criteria_labels)
+    mdm.run_all()
+    mdm.print_comparison()
+    best_idx, borda = mdm.get_best_by_consensus()
+    print(f"\n  Borda共识最优: {schemes[best_idx]} (得分: {borda[best_idx]:.0f})")
+    return mdm, best_idx, borda
+
+
+def run_economic_detailed(opt, result, opt_result):
+    """v6 Step 6d: 独立经济模型全生命周期评估"""
+    print("\n" + "=" * 60)
+    print("Step 6d: Detailed Economic Analysis (v6)")
+    print("=" * 60)
+    from economic_model import EconomicModel
+    em = EconomicModel(
+        pv_capacity=opt_result['pv_capacity'],
+        ess_capacity=opt_result['ess_capacity'],
+        ess_power=opt_result['ess_power'],
+        n_piles_120kw=opt.n_piles_120,
+        n_piles_480kw=opt.n_piles_480,
+        scenario='baseline',
+    )
+    em.print_cost_breakdown()
+
+    annual_saving = opt_result.get('annual_grid_cost', 300000) * 0.5
+    npc_val = em.npc_simple(
+        annual_grid_cost=opt_result.get('annual_grid_cost', 300000),
+        annual_self_consumed_kwh=opt_result.get('annual_self_used_kwh', 0),
+        annual_grid_export_kwh=opt_result.get('annual_grid_export_kwh', 0))
+    lcoe_val = em.lcoe(npc_val, opt_result.get('annual_load_kwh', 1))
+    pbp_val = em.payback_period(annual_saving)
+    try:
+        cash_flows = {y: annual_saving for y in range(1, PROJECT_LIFE + 1)}
+        irr_val = em.irr(cash_flows)
+    except Exception:
+        irr_val = 0.0
+
+    print(f"\n  关键经济指标:")
+    print(f"  NPC (20年): {npc_val/1e4:.1f} 万元")
+    print(f"  LCOE: {lcoe_val:.4f} 元/kWh")
+    print(f"  动态回收期: {pbp_val:.1f} 年")
+    print(f"  IRR: {irr_val:.1%}")
+
+    print(f"\n  三情景NPC对比:")
+    for sc in ['conservative', 'baseline', 'aggressive']:
+        npc_sc = em.npc_with_scenario(
+            np.zeros(8760), np.ones(8760) * 0.8,
+            opt_result.get('annual_self_used_kwh', 0), 0, sc)
+        print(f"    {sc}: NPC={npc_sc/1e4:.1f}万元")
+
+    return em, npc_val, lcoe_val, pbp_val, irr_val
+
+
+def run_dashboard_from_data(mc_scenarios, opt_result, opt=None, calendar_ctx=None):
+    """v6 Step 7: 交互式仪表盘 (复用已有MC数据)"""
+    print("\n" + "=" * 60)
+    print("Step 7: Interactive Dashboard (v6)")
+    print("=" * 60)
+    from interactive_dashboard import build_8760h_data, create_dashboard
+    pv_cap = opt_result['pv_capacity']
+    ess_cap = opt_result['ess_capacity']
+    ess_pow = opt_result['ess_power']
+
+    (daily_results, pv_coeff_seq, load_seq, tou_seq,
+     cal_ctx, summary) = build_8760h_data(mc_scenarios, pv_cap, ess_cap, ess_pow,
+                                           opt=opt, calendar_ctx=calendar_ctx)
+
+    print(f"  Self-sufficiency: {summary['self_sufficiency']:.1%}")
+    print(f"  Annual PV Gen: {summary['total_pv_gen']/1000:.0f} MWh")
+    print(f"  Grid Cost: {summary['grid_cost']/1e4:.1f} wan yuan")
+
+    output = create_dashboard(daily_results, pv_coeff_seq, load_seq, tou_seq,
+                               cal_ctx, summary, pv_cap, ess_cap, ess_pow)
+    return output
+
+
+def main_v6():
+    """v6 全流程: 全部6大研究任务 + 交叉验证 + 经济模型 + 仪表盘"""
+    print("=" * 60)
+    print("Highway Service Area PV-Storage-Charging Simulation v6")
+    print("Full Pipeline: All 6 Research Tasks + Cross-Validation")
+    print("=" * 60)
+
+    calendar_ctx = CalendarContext(seed=SEED)
+    calendar_ctx.print_summary()
+
+    # Step 1: MC 充电负荷
+    mc_scenarios = run_monte_carlo(n_runs=5000)
+
+    # Step 2: PV 出力合成
+    pv_gen, annual_pv, monthly_pv, pv_metrics = run_pv_synthesis(
+        pv_capacity=500, calendar_ctx=calendar_ctx)
+
+    # Step 2a: PV 资源区分析 [NEW]
+    run_pv_resource_analysis(area_size='medium', zone='III')
+
+    # Step 3: PSO 优化 (v6: 启用 EconomicModel + ABM)
+    print("\n" + "=" * 60)
+    print("Step 3: PSO Optimization (v6: EconomicModel + ABM enabled)")
+    print("=" * 60)
+    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios,
+                              seed=SEED, calendar_ctx=calendar_ctx,
+                              use_abm=True, use_econ_model=True, abm_seed=SEED)
+    opt_result, best_x = opt.optimize_pso(pop_size=50, max_iter=40, verbose=True)
+    print(f"\n--- PSO Optimal ---")
+    print(f"  PV: {opt_result['pv_capacity']:.0f} kWp")
+    print(f"  ESS Capacity: {opt_result['ess_capacity']:.0f} kWh")
+    print(f"  ESS Power: {opt_result['ess_power']:.0f} kW")
+    print(f"  NPC: {opt_result['npc']/1e4:.1f} wan yuan")
+    print(f"  Self-sufficiency: {opt_result['self_sufficiency']:.1%}")
+    print(f"  Payback: {opt_result['payback_years']:.1f} years")
+
+    # 8760h 验证
+    print(f"\n--- 8760h Full-year Verification ---")
+    verify = opt.verify_8760h(opt_result['pv_capacity'],
+                               opt_result['ess_capacity'],
+                               opt_result['ess_power'])
+    print(f"  Self-sufficiency (8760h): {verify['self_sufficiency']:.1%}")
+    opt_result['verify_8760h'] = verify
+
+    # Step 3a: NSGA-II
+    pareto_nsga2, nsga2_best = run_nsga2_optimization(
+        opt, pop_size=60, n_gen=30)
+
+    # Step 3b: GA/EGPSO 算法对比 [NEW]
+    run_algorithm_comparison(opt)
+
+    # Step 4: Pareto
+    pareto_results = run_pareto_analysis(opt, n_samples=120)
+
+    # Step 5: Sensitivity
+    sensitivity_data = run_sensitivity(opt)
+
+    # Step 6: 四方案对比
+    scheme_results = run_scheme_comparison(opt)
+
+    # Step 6a: AHP-TOPSIS
+    decision_result = run_decision_framework(opt)
+
+    # Step 6b: VIKOR/GRA 交叉验证 [NEW]
+    schemes_list = ['方案A:纯电网', '方案B:仅光伏', '方案C:光储均衡', '方案D:大光储']
+    indicators_list = ['能源自洽率(%)', 'NPC(万元)', '碳减排(tCO2/年)',
+                        '投资回收期(年)', '光伏消纳率(%)', '供电可靠率(%)']
+    directions_list = ['benefit', 'cost', 'benefit', 'cost', 'benefit', 'benefit']
+
+    # 复用 decision_result 的 values
+    mdm, best_idx, borda = run_cross_validation(
+        schemes_list, indicators_list,
+        np.array(decision_result.values),
+        directions_list,
+        weights=decision_result.combined_weights)
+
+    # Step 6c: 拓扑架构对比 [NEW]
+    ta, topo_names, topo_scores = run_topology_comparison(
+        area_size='medium',
+        pv_cap=opt_result['pv_capacity'],
+        ess_cap=opt_result['ess_capacity'],
+        ess_pow=opt_result['ess_power'])
+
+    # Step 6d: 经济模型评估 [NEW]
+    em, npc_val, lcoe_val, pbp_val, irr_val = run_economic_detailed(
+        opt, opt_result, opt_result)
+
+    # 多情景分析
+    scenario_results = run_multi_scenario(
+        opt, opt_result['pv_capacity'],
+        opt_result['ess_capacity'], opt_result['ess_power'])
+
+    # Step 7: 交互仪表盘 [NEW]
+    dashboard_path = run_dashboard_from_data(
+        mc_scenarios, opt_result, opt=opt, calendar_ctx=calendar_ctx)
+
+    # Save results
+    save_results(mc_scenarios, pv_metrics, opt_result, pareto_results)
+
+    # Step 8: 全部图表 (v5 + v6)
+    print("\n" + "=" * 60)
+    print("Generating All Figures (v5 + v6)...")
+    print("=" * 60)
+
+    generate_all_figures(mc_scenarios, pv_gen, opt, opt_result,
+                         pareto_results, sensitivity_data, scheme_results,
+                         calendar_ctx=calendar_ctx,
+                         decision_result=decision_result,
+                         scenario_results=scenario_results,
+                         pareto_nsga2=pareto_nsga2)
+
+    # v6 新增图表
+    try:
+        fig11_topology_radar(topo_names, topo_scores)
+        print("  [OK] fig11_topology_radar")
+    except Exception as e:
+        print(f"  [SKIP] fig11_topology_radar: {e}")
+
+    try:
+        fig12_economic_breakdown(em, npc_val, lcoe_val, pbp_val, irr_val)
+        print("  [OK] fig12_economic_breakdown")
+    except Exception as e:
+        print(f"  [SKIP] fig12_economic_breakdown: {e}")
+
+    try:
+        fig13_decision_cross_validation(decision_result, mdm)
+        print("  [OK] fig13_decision_cross_validation")
+    except Exception as e:
+        print(f"  [SKIP] fig13_decision_cross_validation: {e}")
+
+    # v6 增强输出
+    print("\n" + "=" * 60)
+    print("v6 Enhanced Output Summary")
+    print("=" * 60)
+    print(f"  PSO NPC (EconomicModel): {opt_result['npc']/1e4:.1f} wan yuan")
+    print(f"  LCOE: {lcoe_val:.4f} yuan/kWh")
+    print(f"  Payback: {pbp_val:.1f} yr  |  IRR: {irr_val:.1%}")
+    print(f"  Topology: {topo_names[0]} recommended")
+    print(f"  Decision Consensus: {schemes_list[best_idx]} (Borda: {borda[best_idx]:.0f})")
+    print(f"  Dashboard: {dashboard_path}")
+    if 'annual_carbon_revenue' in opt_result:
+        print(f"  Annual Carbon Revenue: {opt_result['annual_carbon_revenue']:.0f} yuan")
+    if 'subsidy' in opt_result:
+        print(f"  Total Subsidy: {opt_result['subsidy']:.0f} yuan")
+
+    print("\n" + "=" * 60)
+    print("v6 Simulation Complete!")
+    print("=" * 60)
+
+
 def main(mode='full'):
     """主仿真流程
 
@@ -485,9 +780,12 @@ def main(mode='full'):
         'full' — 全流程含决策框架 (约8-20分钟)
     """
     print("=" * 60)
-    print("Highway Service Area PV-Storage-Charging Simulation v5")
+    print("Highway Service Area PV-Storage-Charging Simulation v6")
     print(f"Mode: {mode}")
     print("=" * 60)
+
+    if mode == 'v6':
+        return main_v6()
 
     # 创建统一日历上下文 (真实2025年日历 + Markov天气链)
     calendar_ctx = CalendarContext(seed=SEED)
@@ -544,9 +842,9 @@ def main(mode='full'):
                          scenario_results=scenario_results,
                          pareto_nsga2=pareto_nsga2)
 
-    # v5 增强输出
+    # v5 增强输出 (fast/nsga2/full 模式)
     print("\n" + "=" * 60)
-    print("V5 Enhanced Economic Metrics")
+    print("v5 Enhanced Economic Metrics")
     print("=" * 60)
     if 'annual_carbon_revenue' in opt_result:
         print(f"  Annual Carbon Revenue: {opt_result['annual_carbon_revenue']:.0f} yuan")
@@ -563,10 +861,11 @@ def main(mode='full'):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Highway Service Area PV-Storage-Charging Simulation v5')
+        description='Highway Service Area PV-Storage-Charging Simulation v6')
     parser.add_argument('--mode', type=str, default='fast',
-                       choices=['fast', 'nsga2', 'full'],
+                       choices=['fast', 'nsga2', 'full', 'v6'],
                        help='Simulation mode: fast (PSO only), '
-                            'nsga2 (PSO + NSGA-II), full (all modules)')
+                            'nsga2 (PSO + NSGA-II), full (all modules), '
+                            'v6 (full pipeline + new modules)')
     args = parser.parse_args()
     main(mode=args.mode)

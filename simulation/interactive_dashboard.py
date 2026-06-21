@@ -26,11 +26,24 @@ OUTPUT_DIR = os.path.join(os.path.dirname(__file__), 'figures')
 SEED = 42
 
 
-def build_8760h_data(mc_scenarios, pv_cap=1231, ess_cap=2000, ess_pow=1000):
-    """构建全年8760h仿真数据"""
-    calendar_ctx = CalendarContext(seed=SEED)
-    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
-                              calendar_ctx=calendar_ctx)
+def build_8760h_data(mc_scenarios, pv_cap=1231, ess_cap=2000, ess_pow=1000,
+                      opt=None, calendar_ctx=None):
+    """构建全年8760h仿真数据
+
+    Parameters
+    ----------
+    opt : MicrogridOptimizer or None
+        已有优化器实例, 传入则复用其 calendar_ctx.
+    calendar_ctx : CalendarContext or None
+        若 opt 和 calendar_ctx 都未传入, 则创建新的 CalendarContext.
+    """
+    if opt is not None:
+        calendar_ctx = getattr(opt, 'calendar_ctx', calendar_ctx)
+    if calendar_ctx is None:
+        calendar_ctx = CalendarContext(seed=SEED)
+    if opt is None:
+        opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
+                                  calendar_ctx=calendar_ctx)
     opt.pv_capacity = pv_cap
     opt.ess_capacity = ess_cap
     opt.ess_power = ess_pow
@@ -265,9 +278,6 @@ def create_dashboard(daily_results, pv_coeff_seq, load_seq, tou_seq, calendar_ct
             continue
         hours = list(range(24))
         dr = daily_results[d]
-        pv = PV_COEFF[season][:24] * pv_cap * WEATHER_COEFF.get(dr['weather'], 1.0)
-        load = dr['load'] / 24  # 简化用均值, 实际用逐时
-        # 重建逐时数据
         pv_hourly = np.array(PV_COEFF[season]) * pv_cap * WEATHER_COEFF.get(dr['weather'], 1.0)
         season_idx = d
         pv_coeff = np.array(PV_COEFF[season]) * WEATHER_COEFF.get(dr['weather'], 1.0)

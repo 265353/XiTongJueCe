@@ -3,6 +3,7 @@
 PSO求解最优光伏+储能配置, 成本计算细化到每个设备
 """
 import numpy as np
+import warnings
 from config import (
     SERVICE_AREA_CONFIG, PV_COEFF, WEATHER_COEFF, MONTHLY_WEATHER_DAYS,
     BUILDING_LOAD,
@@ -55,7 +56,8 @@ class MicrogridOptimizer:
         若为None则使用旧版随机分配模式.
     """
 
-    def __init__(self, size='medium', mc_scenarios=None, seed=None, calendar_ctx=None):
+    def __init__(self, size='medium', mc_scenarios=None, seed=None, calendar_ctx=None,
+                 use_abm=False, use_econ_model=False, abm_seed=42):
         self.size = size
         self.area_config = SERVICE_AREA_CONFIG[size]
         self.rng = np.random.RandomState(seed)
@@ -68,13 +70,32 @@ class MicrogridOptimizer:
         for dt in ['workday', 'weekend', 'holiday', 'spring_festival']:
             self.charging_load[dt] = mc_scenarios[dt]['p50']
 
-        self.building_load = {}
-        self._scale_building_load()
-        self._build_typical_days()
-
         # 固定充电桩数量
         self.n_piles_120 = self.area_config['n_piles_120kw']
         self.n_piles_480 = self.area_config['n_piles_480kw']
+
+        self.building_load = {}
+        self.use_abm = use_abm
+        if use_abm:
+            from building_load_abm import BuildingLoadABM
+            self._abm = BuildingLoadABM(area_size=size, seed=abm_seed)
+            for season in ['spring', 'summer', 'autumn', 'winter']:
+                self.building_load[season] = self._abm.get_typical_day_curve(season, 'workday')
+        else:
+            self._abm = None
+        self._scale_building_load()
+        self._build_typical_days()
+
+        # 经济模型缓存 (v6: 统一经济计算)
+        self.use_econ_model = use_econ_model
+        self._econ_model = None
+        if use_econ_model:
+            from economic_model import EconomicModel
+            self._econ_model = EconomicModel(
+                pv_capacity=0, ess_capacity=0, ess_power=0,
+                n_piles_120kw=self.n_piles_120,
+                n_piles_480kw=self.n_piles_480,
+                scenario='baseline')
 
     def _build_typical_days(self):
         self.typical_days = []
@@ -464,16 +485,27 @@ class MicrogridOptimizer:
         subsidy_applied = min(subsidy_detail['total'],
                              capex_detail['total'] * MAX_SUBSIDY_RATIO)
         total_capex = capex_detail['total']
-        npc = self._calculate_npc_detailed(capex_detail, pv_cap, ess_cap, ess_pow,
-                                            annual_grid_cost, annual_ess_cycles,
-                                            annual_carbon_revenue,
-                                            subsidy_applied)
+
+        # v6: 统一经济模型
+        if self.use_econ_model and self._econ_model is not None:
+            self._econ_model.update_config(pv_cap=pv_cap, ess_e=ess_cap, ess_p=ess_pow)
+            npc = self._econ_model.npc_from_aggregates(
+                annual_grid_cost, annual_ess_cycles,
+                annual_carbon_revenue, subsidy_applied, capex_detail)
+        else:
+            npc = self._calculate_npc_detailed(capex_detail, pv_cap, ess_cap, ess_pow,
+                                                annual_grid_cost, annual_ess_cycles,
+                                                annual_carbon_revenue,
+                                                subsidy_applied)
 
         # 年收益 = 无光储时的网购电成本 - 有光储时的网购电成本 + 碳收益
         annual_cost_without = annual_load * flat_price
         annual_saving = (annual_cost_without - annual_grid_cost
                         + annual_carbon_revenue)
-        payback = self._dynamic_payback(total_capex - subsidy_applied, annual_saving)
+        if self.use_econ_model and self._econ_model is not None:
+            payback = self._econ_model.payback_period(annual_saving)
+        else:
+            payback = self._dynamic_payback(total_capex - subsidy_applied, annual_saving)
 
         return {
             'pv_capacity': pv_cap,
@@ -549,7 +581,10 @@ class MicrogridOptimizer:
         return scenario_result
 
     def _dynamic_payback(self, capex, annual_saving):
-        """动态投资回收期 (含折现率)"""
+        """[Deprecated v6] 动态投资回收期 (含折现率)
+
+        v6: 已迁移至 EconomicModel.payback_period().
+        保留此方法以确保 --mode fast|nsga2|full 回退兼容."""
         if annual_saving <= 0 or capex <= 0:
             return float('inf')
         cum = 0.0
@@ -617,7 +652,10 @@ class MicrogridOptimizer:
                                  annual_grid_cost, annual_ess_cycles,
                                  annual_carbon_revenue=0.0, subsidy=0.0,
                                  scenario_params=None):
-        """设备级NPC — 含碳交易+补贴+负荷增长+电价上涨
+        """[Deprecated v6] 设备级NPC — 含碳交易+补贴+负荷增长+电价上涨
+
+        v6: 已迁移至 EconomicModel.npc_from_aggregates().
+        保留此方法以确保 --mode fast|nsga2|full 回退兼容.
 
         Parameters
         ----------
