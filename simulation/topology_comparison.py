@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from config import (
     SERVICE_AREA_CONFIG, PV_COST, ESS_COST, CHARGING_COST,
     FIXED_COST, LIFESPAN, OM_RATE,
+    MTBF, MTTR, get_availability,  # v6.3: MTBF/可用率数据 (文件24 §3.3)
 )
 
 # ============================================================
@@ -58,11 +59,32 @@ class TopologyAnalyzer:
     """微网拓扑架构量化对比分析器
 
     对比维度:
-    1. 综合效率 (含各级变换损耗)
+    1. 综合效率 (含各级变换损耗, v6.3: 负载率依赖)
     2. 设备投资差异
     3. 可靠性评估
     4. 适用场景匹配
     """
+
+    # v6.3: 电力电子设备在不同负载率下的效率衰减
+    # 轻载(<30%)时效率显著低于额定值
+    _PE_LOAD_DERATE = {
+        0.05: 0.82, 0.10: 0.87, 0.20: 0.92, 0.30: 0.95,
+        0.50: 0.98, 0.75: 0.99, 1.00: 1.00,
+    }
+
+    @staticmethod
+    def _pe_efficiency_at_load(base_eff, load_ratio):
+        """v6.3: 电力电子设备在给定负载率下的实际效率
+
+        base_eff: 额定效率 (满载)
+        load_ratio: 当前负载率 (0-1)
+        """
+        load_ratio = np.clip(load_ratio, 0.01, 1.0)
+        loads = np.array(sorted(TopologyAnalyzer._PE_LOAD_DERATE.keys()))
+        derates = np.array([TopologyAnalyzer._PE_LOAD_DERATE[l] for l in loads])
+        derate = float(np.interp(load_ratio, loads, derates))
+        # 实际效率不能超过额定值
+        return min(base_eff, base_eff / 0.985 * derate)
 
     def __init__(self, area_size='medium', pv_cap=1231, ess_cap=2000, ess_pow=1000):
         cfg = SERVICE_AREA_CONFIG[area_size]
@@ -85,15 +107,24 @@ class TopologyAnalyzer:
     # ============================================================
 
     def _compute_path_efficiency(self, pv_ratio, chg_ratio, bldg_ratio):
-        """计算所有能量流路径的效率矩阵
+        """计算所有能量流路径的效率矩阵 (v6.3: 含负载率修正)
+
+        电力电子设备在轻载时效率下降, 重载时效率接近额定值.
+        使用PV占比作为系统负载率的代理变量.
 
         返回四种拓扑在各路径上的效率, 以及综合加权效率
         """
-        # 归一化比例
+        # v6.3: 系统负载率 (PV越高→转换设备负载越高)
         total = pv_ratio + chg_ratio + bldg_ratio
         if total == 0:
             total = 1.0
         pv_r, chg_r, bldg_r = pv_ratio / total, chg_ratio / total, bldg_ratio / total
+        # 系统负载率: PV比例越大, 电力电子越接近满载
+        sys_load = np.clip(pv_r * 2.0, 0.1, 1.0)
+
+        def pe_eff(key):
+            """获取负载率修正后的电力电子效率"""
+            return self._pe_efficiency_at_load(EFFICIENCY[key], sys_load)
 
         # 能量流路径占比 (典型场景):
         # 路径1: PV直接供AC负载 (pv_r × 0.3)
@@ -111,53 +142,53 @@ class TopologyAnalyzer:
 
         paths = {}
 
-        # AC拓扑路径效率
+        # AC拓扑路径效率 (v6.3: 负载率修正)
         paths['AC'] = {
-            'pv_to_bldg': EFFICIENCY['pv_inverter'],
-            'pv_to_chg': EFFICIENCY['pv_inverter'] * EFFICIENCY['charging_pile_dc'],
-            'pv_to_ess': EFFICIENCY['pv_inverter'] * EFFICIENCY['pcs'],
-            'ess_to_load': EFFICIENCY['pcs'],
-            'grid_to_load': EFFICIENCY['transformer'],
-            'grid_to_chg': EFFICIENCY['transformer'] * EFFICIENCY['charging_pile_dc'],
+            'pv_to_bldg': pe_eff('pv_inverter'),
+            'pv_to_chg': pe_eff('pv_inverter') * pe_eff('charging_pile_dc'),
+            'pv_to_ess': pe_eff('pv_inverter') * pe_eff('pcs'),
+            'ess_to_load': pe_eff('pcs'),
+            'grid_to_load': pe_eff('transformer'),
+            'grid_to_chg': pe_eff('transformer') * pe_eff('charging_pile_dc'),
         }
 
         # DC拓扑路径效率 (减少变换级数)
         paths['DC'] = {
-            'pv_to_bldg': (EFFICIENCY['dc_dc_converter'] *
-                          EFFICIENCY['ac_dc_rectifier'] *
-                          EFFICIENCY['dc_ac_inverter']),  # PV→DC母线→AC逆变→建筑
-            'pv_to_chg': EFFICIENCY['dc_dc_converter'] ** 2,  # PV→DC→充电(仅2级DC/DC)
-            'pv_to_ess': EFFICIENCY['dc_dc_converter'] ** 2,
-            'ess_to_load': EFFICIENCY['dc_dc_converter'] * EFFICIENCY['dc_ac_inverter'],
-            'grid_to_load': (EFFICIENCY['transformer'] *
-                            EFFICIENCY['ac_dc_rectifier'] *
-                            EFFICIENCY['dc_ac_inverter']),
-            'grid_to_chg': (EFFICIENCY['transformer'] *
-                           EFFICIENCY['ac_dc_rectifier'] *
-                           EFFICIENCY['dc_dc_converter']),
+            'pv_to_bldg': (pe_eff('dc_dc_converter') *
+                          pe_eff('ac_dc_rectifier') *
+                          pe_eff('dc_ac_inverter')),
+            'pv_to_chg': pe_eff('dc_dc_converter') ** 2,
+            'pv_to_ess': pe_eff('dc_dc_converter') ** 2,
+            'ess_to_load': pe_eff('dc_dc_converter') * pe_eff('dc_ac_inverter'),
+            'grid_to_load': (pe_eff('transformer') *
+                            pe_eff('ac_dc_rectifier') *
+                            pe_eff('dc_ac_inverter')),
+            'grid_to_chg': (pe_eff('transformer') *
+                           pe_eff('ac_dc_rectifier') *
+                           pe_eff('dc_dc_converter')),
         }
 
-        # Hybrid拓扑路径效率 (DC侧供充电, AC侧供建筑)
+        # Hybrid拓扑路径效率
         paths['Hybrid'] = {
-            'pv_to_bldg': EFFICIENCY['pv_inverter'],  # PV→AC→建筑(同AC)
-            'pv_to_chg': EFFICIENCY['dc_dc_converter'],  # PV→DC→充电(不经AC/DC)
-            'pv_to_ess': EFFICIENCY['dc_dc_converter'] * EFFICIENCY['pcs'],  # DC侧→PCS→AC侧
-            'ess_to_load': EFFICIENCY['pcs'],  # AC母线放电
-            'grid_to_load': EFFICIENCY['transformer'],
-            'grid_to_chg': (EFFICIENCY['transformer'] *
-                           EFFICIENCY['ac_dc_rectifier'] *
-                           EFFICIENCY['dc_dc_converter']),
+            'pv_to_bldg': pe_eff('pv_inverter'),
+            'pv_to_chg': pe_eff('dc_dc_converter'),
+            'pv_to_ess': pe_eff('dc_dc_converter') * pe_eff('pcs'),
+            'ess_to_load': pe_eff('pcs'),
+            'grid_to_load': pe_eff('transformer'),
+            'grid_to_chg': (pe_eff('transformer') *
+                           pe_eff('ac_dc_rectifier') *
+                           pe_eff('dc_dc_converter')),
         }
 
         # Ring拓扑路径效率 (AC基础 + 区间传输损耗)
-        ring_penalty = 0.98  # 区间传输效率
+        ring_penalty = 0.98
         paths['Ring'] = {
-            'pv_to_bldg': EFFICIENCY['pv_inverter'] * ring_penalty,
-            'pv_to_chg': EFFICIENCY['pv_inverter'] * EFFICIENCY['charging_pile_dc'] * ring_penalty,
-            'pv_to_ess': EFFICIENCY['pv_inverter'] * EFFICIENCY['pcs'] * ring_penalty,
-            'ess_to_load': EFFICIENCY['pcs'] * ring_penalty,
-            'grid_to_load': EFFICIENCY['transformer'] * ring_penalty,
-            'grid_to_chg': EFFICIENCY['transformer'] * EFFICIENCY['charging_pile_dc'] * ring_penalty,
+            'pv_to_bldg': pe_eff('pv_inverter') * ring_penalty,
+            'pv_to_chg': pe_eff('pv_inverter') * pe_eff('charging_pile_dc') * ring_penalty,
+            'pv_to_ess': pe_eff('pv_inverter') * pe_eff('pcs') * ring_penalty,
+            'ess_to_load': pe_eff('pcs') * ring_penalty,
+            'grid_to_load': pe_eff('transformer') * ring_penalty,
+            'grid_to_chg': pe_eff('transformer') * pe_eff('charging_pile_dc') * ring_penalty,
         }
 
         # 流路径权重 (文献校准)
@@ -399,11 +430,19 @@ class TopologyAnalyzer:
         # 六个维度: efficiency, cost, reliability, maturity, scalability, complexity
         scores = np.zeros((n, 6))
 
-        # 文件13: 组件额定效率/可靠性 (来源: 设备参数数据)
-        # 串联可靠性模型: R_total = prod(R_component ^ count)
+        # v6.3: 组件可靠度基于MTBF/MTTR (文件24 §3.3)
+        # R = MTBF / (MTBF + MTTR), 串联可靠度: R_total = prod(R_i ^ count_i)
+        _avail_inv = get_availability(MTBF['pv_inverter_string'], MTTR['pv_inverter'])
+        _avail_pcs = get_availability(MTBF['ess_pcs'], MTTR['ess_pcs'])
+        _avail_dcdc = get_availability(MTBF['dc_dc_converter'], MTTR['dc_dc_converter'])
+        _avail_xfmr = get_availability(MTBF['transformer'], 0.01)  # 变压器MTTR≈0
         comp_reliability = {
-            'pv_inverter': 0.999, 'transformer': 0.998, 'pcs': 0.997,
-            'dc_dc': 0.998, 'ac_dc': 0.997, 'dc_ac': 0.997,
+            'pv_inverter': _avail_inv,       # 0.99997 (华为实测)
+            'transformer': _avail_xfmr,       # ~0.99999
+            'pcs': _avail_pcs,                # 0.99992
+            'dc_dc': _avail_dcdc,             # 0.99996
+            'ac_dc': _avail_pcs,              # v6.3: 使用PCS可用率近似
+            'dc_ac': _avail_pcs,              # v6.3: 使用PCS可用率近似
         }
         # 主要串联组件数量 (各拓扑特有)
         comp_counts = {

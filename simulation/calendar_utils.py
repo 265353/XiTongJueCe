@@ -5,10 +5,16 @@
 1. 日类型不再随机分配, 而是基于2025年真实日历 (含中国法定节假日和调休)
 2. 天气序列使用Markov链生成, 具有时间持续性 (晴天更可能连续出现)
 
+v6.3: 研究数据集驱动的转移矩阵 + 二阶Markov近似 + 季节性修正 (文件24 §2.4)
+
 统一PVGenerator和MicrogridOptimizer共用同一份日历和天气序列.
 """
 import numpy as np
-from config import MONTHLY_WEATHER_DAYS, get_season
+from config import (
+    MONTHLY_WEATHER_DAYS, get_season,
+    WEATHER_TRANSITION_MATRIX, WEATHER_SEASONAL_PERSISTENCE,
+    SECOND_ORDER_ALPHA,
+)
 
 # 2025年1月1日 = 周三 (0=Mon, 6=Sun)
 CALENDAR_FIRST_WEEKDAY = 2
@@ -35,6 +41,7 @@ STATUTORY_HOLIDAY_DATES = [
 ]
 
 # 天气Markov链持续性参数 (0~1, 越高天气越持续)
+# v6.3: 保留作为回退值, 推荐使用transition_matrix模式
 WEATHER_PERSISTENCE = 0.65
 
 
@@ -115,54 +122,119 @@ def _compute_persistence(wdays, weather_type, n_days_total):
     return np.clip(n_w / n_days_total * 1.3, 0.35, 0.85)
 
 
-def generate_weather_markov(rng, month, days_in_month_list, persistence=None):
+def generate_weather_markov(rng, month, days_in_month_list, persistence=None,
+                            use_transition_matrix=True, prev_weather=None):
     """
-    使用一阶Markov链生成单月天气序列 (v6.2: 类型特定持续性).
+    使用一阶Markov链生成单月天气序列.
 
-    转移概率: P(w'|w) = persist(w) * δ(w',w) + (1-persist(w)) * P_target(w')
-    每种天气类型有独立的持续性系数, 从月度分布反推 (文件10).
+    v6.3: 支持两种模式:
+    - use_transition_matrix=True: 使用研究数据集转移矩阵 (文件24 §2.4),
+      含季节性修正. 矩阵行和为1.0, 对角线=持续概率.
+    - use_transition_matrix=False: 回退到v6.2类型特定持续性模型.
+
+    二阶近似 (文件24 §2.4):
+      P(w_t | w_{t-1}, w_{t-2}) ≈ α * P(w_t | w_{t-1}) + (1-α) * P(w_t | w_{t-2})
+    当 prev_weather 提供时, 使用二阶近似修正一阶转移概率.
 
     Parameters
     ----------
     rng : np.random.RandomState
     month : int (1-12)
     days_in_month_list : list[int]
-        每月天数列表
     persistence : float or None
-        若为float则覆盖所有类型的持续性值; None则使用类型特定值
+        仅 use_transition_matrix=False 时使用
+    use_transition_matrix : bool
+        是否使用研究数据集转移矩阵
+    prev_weather : str or None
+        上个月的最后一个天气类型, 用于二阶近似 (可选)
 
     Returns
     -------
-    weather_seq : list[str] 该月每天天气类型
+    weather_seq : list[str]
     """
     wdays = MONTHLY_WEATHER_DAYS[month]
     weather_types = list(wdays.keys())
     n_days = days_in_month_list[month - 1]
 
-    # 月度目标分布
+    # 月度目标分布 (用于第一天抽样)
     total = sum(wdays.values())
     target_probs = np.array([wdays[t] / total for t in weather_types])
 
-    # 类型特定持续性 (除非传入全局persistence覆盖)
-    if persistence is not None:
-        persist_values = {t: persistence for t in weather_types}
+    if use_transition_matrix:
+        # v6.3: 使用研究数据集转移矩阵 + 季节性修正
+        season = get_season(month)
+        season_corr = WEATHER_SEASONAL_PERSISTENCE.get(season, {})
+
+        # 构建月度转移矩阵 (从年度平均矩阵出发, 应用季节修正)
+        trans = {}
+        for w_from in weather_types:
+            base_row = WEATHER_TRANSITION_MATRIX.get(w_from, {})
+            row = {}
+            for w_to in weather_types:
+                p = base_row.get(w_to, 0.0)
+                # 季节修正: 调整对角线 (持续概率)
+                if w_to == w_from:
+                    if w_from == 'clear':
+                        p = season_corr.get('clear_stay', p)
+                    elif w_from == 'rain':
+                        p = season_corr.get('rain_stay', p)
+                row[w_to] = p
+            # 重新归一化行和=1.0
+            row_sum = sum(row.values())
+            if row_sum > 0:
+                for w_to in row:
+                    row[w_to] /= row_sum
+            trans[w_from] = row
     else:
-        persist_values = {t: _compute_persistence(wdays, t, n_days)
-                         for t in weather_types}
+        # 回退到v6.2类型特定持续性模型
+        if persistence is not None:
+            persist_values = {t: persistence for t in weather_types}
+        else:
+            persist_values = {t: _compute_persistence(wdays, t, n_days)
+                            for t in weather_types}
 
     seq = []
     # 第一天从目标分布抽样
-    prev_idx = rng.choice(len(weather_types), p=target_probs)
-    prev_type = weather_types[prev_idx]
+    first_idx = rng.choice(len(weather_types), p=target_probs)
+    prev_type = weather_types[first_idx]
     seq.append(prev_type)
+    prev_prev_type = prev_weather if prev_weather is not None else prev_type
 
     for _ in range(1, n_days):
-        p_stay = persist_values[prev_type]
-        if rng.random() < p_stay:
-            curr_idx = weather_types.index(prev_type)
+        if use_transition_matrix:
+            # 一阶转移概率
+            first_order = trans.get(prev_type, {})
+            probs_1st = np.array([first_order.get(t, 0.0) for t in weather_types])
+
+            # 二阶近似: α * P(w_t | w_{t-1}) + (1-α) * P(w_t | w_{t-2})
+            if prev_prev_type is not None and prev_prev_type != prev_type:
+                second_order_row = trans.get(prev_prev_type, {})
+                probs_2nd = np.array([second_order_row.get(t, 0.0) for t in weather_types])
+                probs = SECOND_ORDER_ALPHA * probs_1st + (1 - SECOND_ORDER_ALPHA) * probs_2nd
+            else:
+                probs = probs_1st
+
+            # 归一化
+            prob_sum = probs.sum()
+            if prob_sum > 0:
+                probs = probs / prob_sum
+            else:
+                probs = target_probs
+
+            # 混合目标分布 (30%), 确保月度校准
+            TARGET_BLEND = 0.30
+            probs = (1 - TARGET_BLEND) * probs + TARGET_BLEND * target_probs
+            probs = probs / probs.sum()
+
+            curr_idx = rng.choice(len(weather_types), p=probs)
         else:
-            # 按目标分布切换 (排除当前类型)
-            curr_idx = rng.choice(len(weather_types), p=target_probs)
+            p_stay = persist_values[prev_type]
+            if rng.random() < p_stay:
+                curr_idx = weather_types.index(prev_type)
+            else:
+                curr_idx = rng.choice(len(weather_types), p=target_probs)
+
+        prev_prev_type = prev_type
         prev_type = weather_types[curr_idx]
         seq.append(prev_type)
 
@@ -173,6 +245,8 @@ class CalendarContext:
     """
     日历上下文 — 统一管理日历和天气序列.
 
+    v6.3: 支持 transition_matrix 模式 (文件24 §2.4), 含二阶Markov近似+季节性修正.
+
     用法:
         ctx = CalendarContext(seed=42)
         ctx.day_types[day]        # 第day天的类型
@@ -181,10 +255,11 @@ class CalendarContext:
         ctx.day_of_week[day]      # 第day天是周几
     """
 
-    def __init__(self, seed=None, weather_persistence=None):
+    def __init__(self, seed=None, weather_persistence=None, use_transition_matrix=True):
         self.rng = np.random.RandomState(seed)
         self.persistence = (weather_persistence if weather_persistence is not None
                            else WEATHER_PERSISTENCE)
+        self.use_transition_matrix = use_transition_matrix
 
         # 构建日历
         (self.day_types, self.day_of_week,
@@ -197,14 +272,19 @@ class CalendarContext:
         self.season_of_day = [get_season(self.month_of_day[d]) for d in range(365)]
 
     def _build_weather(self):
-        """使用Markov链生成全年365天天气序列"""
+        """使用Markov链生成全年365天天气序列 (v6.3: 转移矩阵+二阶近似)"""
         days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         weather_seq = []
+        prev_month_last = None
         for month in range(1, 13):
             month_weather = generate_weather_markov(
-                self.rng, month, days_in_month, self.persistence
+                self.rng, month, days_in_month,
+                persistence=self.persistence,
+                use_transition_matrix=self.use_transition_matrix,
+                prev_weather=prev_month_last,
             )
             weather_seq.extend(month_weather)
+            prev_month_last = month_weather[-1]
         return weather_seq
 
     def get_day_weather(self, day_idx):
@@ -238,7 +318,8 @@ class CalendarContext:
             print(f"  {dt:20s}: {dt_counts.get(dt, 0):3d} 天 {bar}")
 
         # 天气统计 (按月)
-        print("\n月度天气分布 (Markov链, persistence={:.2f}):".format(self.persistence))
+        mode_label = "转移矩阵+二阶Markov" if self.use_transition_matrix else f"persistence={self.persistence:.2f}"
+        print(f"\n月度天气分布 (Markov链, {mode_label}):")
         days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
         day_start = 0
         for month in range(1, 13):

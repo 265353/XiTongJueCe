@@ -23,7 +23,7 @@ import time
 sys.path.insert(0, os.path.dirname(__file__))
 
 from config import (
-    SERVICE_AREA_CONFIG, PV_AREA_RATIO,
+    SERVICE_AREA_CONFIG, PV_AREA_RATIO, SELF_SUFFICIENCY_MIN,
 )
 
 
@@ -300,7 +300,7 @@ class EGPSO(OptimizerBase):
 # ============================================================
 
 class RobustOptimizationFramework:
-    """两阶段鲁棒优化框架
+    """两阶段鲁棒优化框架 — v6.5 全链集成
 
     文件08核心方法:
     外层(min): 投资决策 x = [PV_cap, ESS_cap, ESS_power]
@@ -309,39 +309,133 @@ class RobustOptimizationFramework:
     应用NC&CG (Nested Column and Constraint Generation) 思想,
     简化为: 枚举最恶劣场景 + 内层TOU调度优化
 
+    v6.5: 新增 from_optimizer() 桥接 MicrogridOptimizer,
+          支持 PSO/GA/EGPSO 全算法鲁棒优化.
+
     Reference:
       中国电机工程学报, 2025: 高速公路服务区微网容量配置两阶段鲁棒优化
     """
 
-    def __init__(self, evaluator, nominal_pv_coeff, nominal_load):
+    def __init__(self, evaluator, nominal_pv_coeff=None, nominal_load=None):
         """
-        evaluator: callable(pv_cap, ess_cap, ess_pow, pv_coeff, load) -> dict
-        nominal_pv_coeff: 标称光伏出力系数 (24h)
-        nominal_load: 标称负荷 (24h)
+        evaluator: callable(pv_cap, ess_cap, ess_pow, pv_coeff=None, load=None) -> dict
+                   当 pv_coeff/load 为 None 时使用标称场景.
+        nominal_pv_coeff: 标称光伏出力系数 (8760h or None)
+        nominal_load: 标称负荷 (8760h or None)
         """
         self.evaluator = evaluator
-        self.nominal_pv = np.array(nominal_pv_coeff)
-        self.nominal_load = np.array(nominal_load)
+        self.nominal_pv = (np.array(nominal_pv_coeff) if nominal_pv_coeff is not None
+                          else None)
+        self.nominal_load = (np.array(nominal_load) if nominal_load is not None
+                            else None)
+        self._optimizer = None  # v6.5: MicrogridOptimizer引用
+        self._uncertainty_sets = []  # v6.5: 不确定性场景集
+
+    @classmethod
+    def from_optimizer(cls, optimizer, uncertainty_pv=0.20, uncertainty_load=0.15,
+                       n_scenarios=3):
+        """v6.5: 从 MicrogridOptimizer 构建鲁棒优化框架
+
+        创建桥接 evaluator, 使鲁棒优化可直接调用仿真全链.
+        生成 n_scenarios 个不确定性场景 (含标称+最恶劣+随机抽样).
+
+        Parameters
+        ----------
+        optimizer : MicrogridOptimizer
+            已初始化的微网优化器 (含MC充电负荷结果).
+        uncertainty_pv : float
+            PV出力的最大不确定性 (±百分比).
+        uncertainty_load : float
+            负荷的最大不确定性 (±百分比).
+        n_scenarios : int
+            不确定性场景数量 (≥2, 含标称和最恶劣).
+        """
+        # 获取标称8760h序列
+        pv_nominal, load_nominal, tou_seq, seasons = optimizer._build_8760h_sequence()
+
+        # 生成不确定性场景集
+        rng = np.random.RandomState(optimizer.rng.randint(0, 2**31 - 1))
+        scenarios = []
+
+        # 场景0: 标称
+        scenarios.append({'pv': pv_nominal.copy(), 'load': load_nominal.copy(),
+                         'name': 'nominal'})
+
+        # 场景1: 最恶劣 (PV低+负荷高)
+        pv_worst = pv_nominal * (1.0 - uncertainty_pv)
+        load_worst = load_nominal * (1.0 + uncertainty_load)
+        scenarios.append({'pv': pv_worst, 'load': load_worst, 'name': 'worst'})
+
+        # 场景2..n-1: 随机抽样 (介于标称和极端之间)
+        for i in range(2, n_scenarios):
+            pv_mult = 1.0 - rng.uniform(0, uncertainty_pv)
+            load_mult = 1.0 + rng.uniform(0, uncertainty_load)
+            scenarios.append({
+                'pv': pv_nominal * pv_mult,
+                'load': load_nominal * load_mult,
+                'name': f'random_{i}',
+            })
+
+        # 创建桥接 evaluator
+        def bridge_evaluator(pv_cap, ess_cap, ess_pow, pv_coeff=None, load=None):
+            """桥接: 接受场景参数, 调用 optimizer.evaluate_config"""
+            if pv_coeff is not None and load is not None:
+                # 临时替换 optimizer 的内部状态 (场景评估)
+                return _evaluate_with_scenario(
+                    optimizer, pv_cap, ess_cap, ess_pow, pv_coeff, load)
+            else:
+                # 使用标称场景
+                return optimizer.evaluate_config(pv_cap, ess_cap, ess_pow)
+
+        instance = cls(bridge_evaluator, pv_nominal, load_nominal)
+        instance._optimizer = optimizer
+        instance._uncertainty_sets = scenarios
+        instance._uncertainty_pv = uncertainty_pv
+        instance._uncertainty_load = uncertainty_load
+        return instance
 
     def worst_case_scenario(self, uncertainty_pv=0.20, uncertainty_load=0.15):
-        """生成最恶劣场景: PV低出力 + 负荷高出力 + 峰谷电价差最大"""
-        worst_pv = self.nominal_pv * (1 - uncertainty_pv)  # PV降20%
-        worst_load = self.nominal_load * (1 + uncertainty_load)  # 负荷增15%
+        """生成最恶劣场景: PV低出力 + 负荷高出力"""
+        if self.nominal_pv is not None:
+            worst_pv = self.nominal_pv * (1 - uncertainty_pv)
+            worst_load = self.nominal_load * (1 + uncertainty_load)
+        else:
+            worst_pv = self.nominal_pv
+            worst_load = self.nominal_load
         return worst_pv, worst_load
 
     def robust_evaluate(self, pv_cap, ess_cap, ess_pow,
                         uncertainty_pv=0.20, uncertainty_load=0.15):
-        """鲁棒评估: 在最恶劣场景下运行, 得到最保守的性能指标"""
-        worst_pv, worst_load = self.worst_case_scenario(uncertainty_pv,
-                                                         uncertainty_load)
-        # 最恶劣场景
-        worst_result = self.evaluator(pv_cap, ess_cap, ess_pow,
-                                       worst_pv, worst_load)
-        # 标称场景
-        nominal_result = self.evaluator(pv_cap, ess_cap, ess_pow,
-                                         self.nominal_pv, self.nominal_load)
+        """鲁棒评估: 在所有场景下评估, 返回最保守的性能指标"""
+        all_results = []
 
-        # 鲁棒性指标: 最恶劣场景性能/标称性能
+        # 如果有预生成场景集, 使用场景集
+        if self._uncertainty_sets:
+            for sc in self._uncertainty_sets:
+                result = self.evaluator(pv_cap, ess_cap, ess_pow,
+                                        sc['pv'], sc['load'])
+                result['scenario_name'] = sc['name']
+                all_results.append(result)
+        else:
+            # 回退到标称+最恶劣两场景
+            nominal = self.evaluator(pv_cap, ess_cap, ess_pow,
+                                     self.nominal_pv, self.nominal_load)
+            nominal['scenario_name'] = 'nominal'
+            all_results.append(nominal)
+
+            worst_pv, worst_load = self.worst_case_scenario(
+                uncertainty_pv, uncertainty_load)
+            worst = self.evaluator(pv_cap, ess_cap, ess_pow, worst_pv, worst_load)
+            worst['scenario_name'] = 'worst'
+            all_results.append(worst)
+
+        # 取最恶劣NPC (鲁棒目标: min max NPC)
+        worst_idx = max(range(len(all_results)),
+                       key=lambda i: all_results[i].get('npc', 0))
+        worst_result = all_results[worst_idx]
+        nominal_result = all_results[0]  # 标称为第一个
+
+        # 鲁棒性指标
         ssr_ratio = (worst_result.get('self_sufficiency', 0) /
                      max(nominal_result.get('self_sufficiency', 0.01), 0.01))
         npc_penalty = (worst_result.get('npc', 0) -
@@ -350,10 +444,10 @@ class RobustOptimizationFramework:
         return {
             'nominal': nominal_result,
             'worst_case': worst_result,
+            'all_scenarios': all_results,
             'robustness_ssr_ratio': ssr_ratio,
             'robustness_npc_penalty': npc_penalty,
-            'worst_pv_coeff': worst_pv.tolist(),
-            'worst_load': worst_load.tolist(),
+            'robust_npc': worst_result.get('npc', 1e12),
         }
 
     def robust_optimize(self, candidate_configs, uncertainty_pv=0.20,
@@ -367,18 +461,123 @@ class RobustOptimizationFramework:
         for pv, ess_e, ess_p in candidate_configs:
             r = self.robust_evaluate(pv, ess_e, ess_p,
                                      uncertainty_pv, uncertainty_load)
-            # 鲁棒目标: min max NPC (worst-case NPC)
             robust_npc = r['worst_case'].get('npc', 1e12)
             results.append({
                 'pv': pv, 'ess_e': ess_e, 'ess_p': ess_p,
                 'robust_npc': robust_npc,
                 'nominal_npc': r['nominal'].get('npc', 0),
                 'robustness_ssr': r['robustness_ssr_ratio'],
+                'npc_penalty': r['robustness_npc_penalty'],
                 'full': r,
             })
 
         results.sort(key=lambda x: x['robust_npc'])
         return results
+
+    def robust_optimize_pso(self, pop_size=30, max_iter=20, verbose=True):
+        """v6.5: 使用PSO在不确定性场景集上进行鲁棒优化
+
+        目标: min(max NPC over all scenarios)
+        即在最恶劣场景下NPC最小的配置.
+
+        要求框架已通过 from_optimizer() 初始化.
+        """
+        if self._optimizer is None:
+            raise RuntimeError("robust_optimize_pso 需要 from_optimizer() 初始化")
+
+        opt = self._optimizer
+        bounds = np.array([
+            [50, opt.area_config['pv_area_m2'] / PV_AREA_RATIO],
+            [0, 3000],
+            [0, 1000],
+        ])
+
+        dim = 3
+        pos = np.zeros((pop_size, dim))
+        vel = np.zeros((pop_size, dim))
+        pbest_pos = np.zeros((pop_size, dim))
+        pbest_fit = np.full(pop_size, np.inf)
+        gbest_pos = np.zeros(dim)
+        gbest_fit = np.inf
+        best_result = None
+        rng = opt.rng
+
+        for i in range(pop_size):
+            pos[i, 0] = rng.uniform(bounds[0, 0], bounds[0, 1])
+            pos[i, 1] = rng.uniform(bounds[1, 0], bounds[1, 1])
+            pos[i, 2] = rng.uniform(bounds[2, 0], min(pos[i, 1] * 0.5, bounds[2, 1]))
+
+        def robust_fitness(x):
+            pv, ess_e, ess_p = x[0], x[1], x[2]
+            if ess_e < 10:
+                ess_e = 0; ess_p = 0
+            ess_p = min(ess_p, ess_e * 0.5)
+            # 在所有场景下评估, 取最差NPC
+            worst_npc = -np.inf
+            worst_result = None
+            for sc in self._uncertainty_sets:
+                r = _evaluate_with_scenario(opt, pv, ess_e, ess_p,
+                                           sc['pv'], sc['load'])
+                npc_val = r.get('npc', 1e12)
+                if npc_val > worst_npc:
+                    worst_npc = npc_val
+                    worst_result = r
+            # 惩罚项: 最差场景下仍需满足自洽率约束
+            ssr = worst_result.get('self_sufficiency', 0) if worst_result else 0
+            penalty = 0
+            if ssr < SELF_SUFFICIENCY_MIN:
+                penalty += (SELF_SUFFICIENCY_MIN - ssr) * worst_npc * 2.0
+            return worst_npc + penalty, worst_result
+
+        w = 0.7
+        c1, c2 = 1.5, 2.0
+
+        for it in range(max_iter):
+            for i in range(pop_size):
+                pos[i] = np.clip(pos[i], bounds[:, 0], bounds[:, 1])
+                pos[i, 2] = min(pos[i, 2], pos[i, 1] * 0.5)
+                fit, result = robust_fitness(pos[i])
+                if fit < pbest_fit[i]:
+                    pbest_fit[i] = fit; pbest_pos[i] = pos[i].copy()
+                if fit < gbest_fit:
+                    gbest_fit = fit; gbest_pos = pos[i].copy()
+                    best_result = result
+            for i in range(pop_size):
+                r1, r2 = rng.random(dim), rng.random(dim)
+                vel[i] = (w * vel[i] + c1 * r1 * (pbest_pos[i] - pos[i]) +
+                          c2 * r2 * (gbest_pos - pos[i]))
+                pos[i] += vel[i]
+            w = 0.7 - 0.4 * it / max_iter
+
+            if verbose and (it + 1) % 5 == 0 and best_result:
+                print(f"  Robust PSO iter {it+1}/{max_iter}: "
+                      f"Worst-NPC={gbest_fit/1e4:.1f}万元, "
+                      f"PV={gbest_pos[0]:.0f}kWp, ESS={gbest_pos[1]:.0f}kWh")
+
+        return best_result, gbest_pos, gbest_fit
+
+
+def _evaluate_with_scenario(optimizer, pv_cap, ess_cap, ess_pow, pv_coeff_seq, load_seq):
+    """v6.5: 使用指定PV/负荷场景评估配置 (内部桥接函数)
+
+    临时替换 optimizer 的 _build_8760h_sequence 返回值,
+    使用传入的场景数据运行全年调度仿真.
+    """
+    # 保存原始方法
+    original_build = optimizer._build_8760h_sequence
+    # 构建简单场景序列 (天气/TOU从原始方法获取, PV/负荷用场景数据)
+    _, _, tou_seq_orig, seasons_seq_orig = original_build()
+
+    def scenario_sequence():
+        return (np.array(pv_coeff_seq), np.array(load_seq),
+                np.array(tou_seq_orig), list(seasons_seq_orig))
+
+    optimizer._build_8760h_sequence = scenario_sequence
+    try:
+        result = optimizer.evaluate_config(pv_cap, ess_cap, ess_pow)
+    finally:
+        optimizer._build_8760h_sequence = original_build
+    return result
 
 
 # ============================================================

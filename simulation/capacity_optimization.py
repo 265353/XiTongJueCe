@@ -8,6 +8,7 @@ from config import (
     SERVICE_AREA_CONFIG, PV_COEFF, WEATHER_COEFF, MONTHLY_WEATHER_DAYS,
     BUILDING_LOAD,
     WEATHER_CHARGING_COEFF, WEATHER_BUILDING_COEFF, HOLIDAY_TOU_FACTOR,
+    CHARGING_BUILDING_COUPLING,
     PV_COST, PV_COST_PER_KWP, ESS_COST, CHARGING_COST, FIXED_COST, FIXED_COST_TOTAL,
     LIFESPAN, OM_RATE, REPLACEMENT,
     STATION_AUX_DAILY_KWH,
@@ -24,8 +25,11 @@ from config import (
     CCER_PRICE, CCER_PRICE_ESCALATION,
     PV_SUBSIDY_PER_KWP, ESS_SUBSIDY_PER_KWH, ESS_SUBSIDY_PER_KW,
     CHARGING_SUBSIDY_PER_PILE, MAX_SUBSIDY_RATIO,
-    SCENARIOS, SCENARIO_BASELINE,
+    SCENARIOS, SCENARIO_BASELINE, LOAD_GROWTH_MODEL, LOAD_GROWTH_BASE_YEAR, get_load_growth_factor,
     MONTHLY_AMBIENT_TEMP, get_ess_temp_derate,
+    get_rte,  # v6.3: SOC/C-rate依赖RTE
+    # v6.5: 电池退化与温度/DOD关系
+    get_battery_yearly_degradation, get_calendar_fade_rate, get_cycle_life_at_dod,
 )
 
 # 日类型年权重 (来源于文件12)
@@ -67,8 +71,10 @@ class MicrogridOptimizer:
             raise ValueError("需要传入MC仿真结果 mc_scenarios")
 
         self.charging_load = {}
+        self.charging_load_p95 = {}  # v6.3: P95场景用于尾部风险评估
         for dt in ['workday', 'weekend', 'holiday', 'spring_festival']:
             self.charging_load[dt] = mc_scenarios[dt]['p50']
+            self.charging_load_p95[dt] = mc_scenarios[dt]['p95']
 
         # 固定充电桩数量
         self.n_piles_120 = self.area_config['n_piles_120kw']
@@ -207,14 +213,17 @@ class MicrogridOptimizer:
 
         for d in range(365):
             season = seasons_seq[d*24]
+            month = d // 30 + 1
             pv_profile = pv_coeff_seq[d*24:(d+1)*24] * pv_cap
             load_profile = load_seq[d*24:(d+1)*24]
 
             tou_hourly = tou_seq[d*24:(d+1)*24]
+            amb_temp = MONTHLY_AMBIENT_TEMP.get(min(max(month, 1), 12), 20.0)
             result = self.simulate_daily_operation(pv_profile, load_profile, season,
                                                    tou_prices=tou_hourly,
                                                    initial_soc=soc,
-                                                   foresight_horizon=24)
+                                                   foresight_horizon=24,
+                                                   ambient_temp=amb_temp)
             soc = result['final_soc']
             total_grid_import += result['grid_import'].sum()
             total_grid_export += result['grid_export'].sum()
@@ -260,16 +269,10 @@ class MicrogridOptimizer:
             self.building_load[season] = np.array(BUILDING_LOAD[season]) * scale
 
     def get_total_load(self, season, day_type='workday', weather='clear'):
-        """计算总负荷, 考虑日类型和天气影响
+        """计算总负荷, 考虑日类型、天气和充-建耦合影响
 
-        Parameters
-        ----------
-        season : str
-            季节
-        day_type : str
-            日类型: workday/weekend/holiday/spring_festival
-        weather : str
-            天气类型: clear/partly_cloudy/cloudy/overcast/rain
+        v6.3: 新增充电-建筑负荷耦合 (文件24 §2.3)
+        每辆充电车带来2-3人进入建筑, 产生0.5-2.5kW增量建筑负荷.
         """
         charging = self.charging_load.get(day_type, self.charging_load['workday'])
         building = self.building_load.get(season, self.building_load['spring'])
@@ -278,25 +281,53 @@ class MicrogridOptimizer:
         # 天气修正: 恶劣天气 → 充电需求下降, 建筑负荷上升
         weather_chg = WEATHER_CHARGING_COEFF.get(weather, 1.0)
         weather_bldg = WEATHER_BUILDING_COEFF.get(weather, 1.0)
-        return charging * weather_chg + building * bldg_coeff * weather_bldg
+
+        charging_effective = charging * weather_chg
+        building_base = building * bldg_coeff * weather_bldg
+
+        # v6.3: 充电-建筑耦合 — 每辆充电车带来建筑负荷增量
+        # 估算活跃充电车辆数: charging_load / 典型充电功率(~100kW)
+        active_chargers = charging_effective / 100.0
+        coupling_kw_per_ev = CHARGING_BUILDING_COUPLING.get(day_type, 0.7)
+        building_coupling = active_chargers * coupling_kw_per_ev
+
+        return charging_effective + building_base + building_coupling
 
     def simulate_daily_operation(self, pv_profile, load_profile, season='spring',
                                   tou_prices=None, initial_soc=None,
-                                  foresight_horizon=24):
-        """TOU感知最优调度 — 24h迭代套利算法
+                                  foresight_horizon=24,
+                                  ambient_temp=None, pred_error_std=0.0):
+        """TOU感知最优调度 — 24h迭代套利算法 (v6.3: RTE/温度/自放电/预测误差)
 
         核心逻辑: 在已知24h PV+负荷曲线和分时电价的前提下,
         通过ESS在低价时段充电、高价时段放电实现最优套利.
+
+        v6.3 改进:
+        - RTE: 使用 get_rte(soc, c_rate) 替代固定0.92
+        - ESS温度衰减: 低温时可用容量下降
+        - 自放电: SOC每日衰减约0.1%
+        - 预测误差: 调度器面对的PV/负荷含噪声 (模拟实际预测不完美)
 
         Parameters
         ----------
         tou_prices : np.ndarray or None
             24h电价数组, 若为None则按季节自动获取.
-            传入时可包含节假日调整因子.
+        ambient_temp : float or None
+            环境温度(℃), 用于储能温度衰减. None则不衰减.
+        pred_error_std : float
+            PV和负荷预测误差的标准差 (相对值), 0=完美预测.
         """
         T = 24
         prices = tou_prices if tou_prices is not None else get_tou_price_array(season)
         net_load = load_profile - pv_profile  # + = deficit
+
+        # v6.3: 预测误差 — 调度器使用含噪声的PV/负荷 (真实值不变)
+        if pred_error_std > 0:
+            pv_noisy = pv_profile * (1 + self.rng.normal(0, pred_error_std, T))
+            load_noisy = load_profile * (1 + self.rng.normal(0, pred_error_std * 0.6, T))
+            net_load_sched = load_noisy - pv_noisy
+        else:
+            net_load_sched = net_load
 
         # 初始化: ESS不参与, 纯直连
         grid_import = np.maximum(0, net_load)
@@ -313,7 +344,20 @@ class MicrogridOptimizer:
                 'loss_of_load': np.zeros(T),
             }
 
-        eta_rt = 0.92  # RTE (AC侧)
+        # v6.3: ESS温度衰减 (低温时可用容量下降)
+        if ambient_temp is not None:
+            temp_derate = get_ess_temp_derate(ambient_temp)
+        else:
+            temp_derate = 1.0
+        ess_capacity_effective = self.ess_capacity * temp_derate
+        ess_power_effective = self.ess_power * temp_derate
+
+        # v6.3: RTE随SOC和C-rate变化 (替代固定eta_rt=0.92)
+        def _get_eta(soc, ch_power):
+            c_rate = ch_power / max(self.ess_capacity, 1.0)
+            return get_rte(soc, c_rate)
+
+        eta_rt = _get_eta(initial_soc if initial_soc is not None else 0.5, 0.0)
         eta_one_way = np.sqrt(eta_rt)
 
         # 迭代寻找最优充放电对
@@ -322,7 +366,7 @@ class MicrogridOptimizer:
             best_trade = None
 
             for t_ch in range(T):
-                ch_headroom = self.ess_power - ess_ch[t_ch]
+                ch_headroom = ess_power_effective - ess_ch[t_ch]
                 if ch_headroom < 0.5:
                     continue
 
@@ -339,11 +383,12 @@ class MicrogridOptimizer:
                 for t_dis in range(t_ch, max_dis):
                     if grid_import[t_dis] < 0.5:
                         continue
-                    dis_headroom = min(self.ess_power - ess_disch[t_dis],
+                    dis_headroom = min(ess_power_effective - ess_disch[t_dis],
                                        grid_import[t_dis])
                     if dis_headroom < 0.5:
                         continue
 
+                    # v6.3: 使用调度器看到的净负荷 (grid_import/export基于无噪声真实值)
                     energy = min(max_energy, dis_headroom / eta_rt)
                     if energy < 0.5:
                         continue
@@ -372,12 +417,15 @@ class MicrogridOptimizer:
 
             grid_import[t_dis] = max(0, grid_import[t_dis] - dis_energy)
 
-        # 重建SOC曲线
-        # v6.2: SOC跨天连续 (文件03: SOC范围10-90%)
+        # 重建SOC曲线 (v6.3: 含自放电)
         soc = initial_soc if initial_soc is not None else 0.5
         soc_curve = np.zeros(T)
+        self_discharge_per_hour = 0.001 / 24  # v6.3: 自放电 ~0.1%/天
         for t in range(T):
-            soc += (ess_ch[t] * eta_one_way - ess_disch[t] / eta_one_way) / self.ess_capacity
+            # 充放电对SOC的影响 (基于有效容量)
+            soc += (ess_ch[t] * eta_one_way - ess_disch[t] / eta_one_way) / ess_capacity_effective
+            # v6.3: 自放电
+            soc -= self_discharge_per_hour * soc
             soc = np.clip(soc, SOC_MIN, SOC_MAX)
             soc_curve[t] = soc
 
@@ -390,7 +438,7 @@ class MicrogridOptimizer:
                 grid_import[t] = trans_limit_kw
                 loss_of_load[t] = excess
 
-        # v6.2: 变压器出口约束 (文件13: 箱变双向功率限制)
+        # v6.2: 变压器出口约束
         excess_pv_curtailed = np.zeros(T)
         for t in range(T):
             if grid_export[t] > trans_limit_kw:
@@ -406,17 +454,25 @@ class MicrogridOptimizer:
             'final_soc': soc,
         }
 
-    def evaluate_config(self, pv_cap, ess_cap, ess_pow, params_override=None):
-        """评估配置 — 365天顺序仿真 + SOC跨天连续 (v6.2)
+    def evaluate_config(self, pv_cap, ess_cap, ess_pow, params_override=None,
+                         use_p95=False):
+        """评估配置 — 365天顺序仿真 + SOC跨天连续 (v6.3)
 
         替代旧版 typical_days 加权聚合.
         使用 _build_8760h_sequence() 获取全年逐时序列,
         每天顺序调度, SOC从前一天继承.
 
+        v6.3 改进:
+        - SOC/C-rate依赖RTE + 温度衰减 + 自放电
+        - 预测误差注入 (PV ~12%, 负荷 ~7%)
+        - use_p95: 使用P95充电负荷评估尾部风险
+
         Parameters
         ----------
         params_override : dict or None
             {'pv_cost_mult': float, 'price_mult': float} 用于敏感度分析
+        use_p95 : bool
+            是否使用P95充电负荷 (尾部风险评估)
         """
         self.pv_capacity = pv_cap
         self.ess_capacity = ess_cap
@@ -431,22 +487,38 @@ class MicrogridOptimizer:
         annual_self_used = 0.0
         annual_loss_of_load = 0.0
         annual_ess_cycles = 0.0
+        # v6.5: 逐日收集DOD和温度数据
+        daily_dod_list = []
+        daily_temp_list = []
 
         # 构建8760h序列 (文件10: 天气+日类型+TOU)
         pv_coeff_seq, load_seq, tou_seq, seasons_seq = self._build_8760h_sequence()
 
-        soc = 0.5  # 年初SOC (文件03: 10-90%范围, 1月1日起始50%)
+        # v6.3: 使用P95负荷 (尾部风险评估)
+        if use_p95:
+            orig_charging = self.charging_load
+            self.charging_load = self.charging_load_p95
+
+        soc = 0.5  # 年初SOC
+        # 预测误差标准差 (v6.3)
+        pred_error = 0.12  # PV 12%, 负荷 ~7%
 
         for d in range(365):
             season = seasons_seq[d * 24]
+            month = d // 30 + 1  # 近似月份
             pv_profile = pv_coeff_seq[d * 24:(d + 1) * 24] * pv_cap
             load_profile = load_seq[d * 24:(d + 1) * 24]
             tou_hourly = tou_seq[d * 24:(d + 1) * 24]
 
+            # v6.3: 当日环境温度 (月均, 用于ESS温度衰减)
+            amb_temp = MONTHLY_AMBIENT_TEMP.get(min(max(month, 1), 12), 20.0)
+
             result = self.simulate_daily_operation(
                 pv_profile, load_profile, season,
                 tou_prices=tou_hourly, initial_soc=soc,
-                foresight_horizon=6)
+                foresight_horizon=6,
+                ambient_temp=amb_temp,
+                pred_error_std=pred_error)
             soc = result['final_soc']
 
             daily_pv_gen = pv_profile.sum()
@@ -463,7 +535,21 @@ class MicrogridOptimizer:
             annual_grid_cost -= daily_export * FEED_IN_PRICE
 
             if ess_cap > 0:
-                annual_ess_cycles += result['ess_discharge'].sum() / ess_cap
+                daily_discharge = result['ess_discharge'].sum()
+                annual_ess_cycles += daily_discharge / ess_cap
+                # v6.5: 日等效DOD (当日放电量/有效容量)
+                ess_cap_eff = ess_cap * temp_derate if 'temp_derate' in dir() else ess_cap
+                daily_dod = daily_discharge / max(ess_cap_eff, 1.0)
+                daily_dod_list.append(min(daily_dod, 0.95))
+            daily_temp_list.append(amb_temp)
+
+        # v6.5: 年均DOD和温度 (用于退化模型)
+        avg_dod = float(np.mean(daily_dod_list)) if daily_dod_list else 0.50
+        avg_temp_c = float(np.mean(daily_temp_list)) if daily_temp_list else 20.0
+
+        # v6.3: 恢复原始负荷 (若使用了P95)
+        if use_p95:
+            self.charging_load = orig_charging
 
         # 光伏衰减 (年化平均)
         avg_degradation = PV_FIRST_YEAR_DEGRADATION + PV_ANNUAL_DEGRADATION * (PROJECT_LIFE - 1) / 2
@@ -508,17 +594,19 @@ class MicrogridOptimizer:
                              capex_detail['total'] * MAX_SUBSIDY_RATIO)
         total_capex = capex_detail['total']
 
-        # v6: 统一经济模型
+        # v6.5: 经济模型传入温度/DOD退化参数
         if self.use_econ_model and self._econ_model is not None:
             self._econ_model.update_config(pv_cap=pv_cap, ess_e=ess_cap, ess_p=ess_pow)
             npc = self._econ_model.npc_from_aggregates(
                 annual_grid_cost, annual_ess_cycles,
-                annual_carbon_revenue, subsidy_applied, capex_detail)
+                annual_carbon_revenue, subsidy_applied, capex_detail,
+                avg_temp_c=avg_temp_c, avg_dod=avg_dod)
         else:
             npc = self._calculate_npc_detailed(capex_detail, pv_cap, ess_cap, ess_pow,
                                                 annual_grid_cost, annual_ess_cycles,
                                                 annual_carbon_revenue,
-                                                subsidy_applied)
+                                                subsidy_applied,
+                                                avg_temp_c=avg_temp_c, avg_dod=avg_dod)
 
         # 年收益 = 无光储时的网购电成本 - 有光储时的网购电成本 + 碳收益
         annual_cost_without = annual_load * flat_price
@@ -673,11 +761,14 @@ class MicrogridOptimizer:
     def _calculate_npc_detailed(self, capex, pv_cap, ess_cap, ess_pow,
                                  annual_grid_cost, annual_ess_cycles,
                                  annual_carbon_revenue=0.0, subsidy=0.0,
-                                 scenario_params=None):
+                                 scenario_params=None,
+                                 avg_temp_c=25.0, avg_dod=0.50):
         """[Deprecated v6] 设备级NPC — 含碳交易+补贴+负荷增长+电价上涨
 
         v6: 已迁移至 EconomicModel.npc_from_aggregates().
         保留此方法以确保 --mode fast|nsga2|full 回退兼容.
+
+        v6.5: 新增 avg_temp_c/avg_dod 用于电池退化模型.
 
         Parameters
         ----------
@@ -686,6 +777,10 @@ class MicrogridOptimizer:
             含: load_growth_rate, grid_price_escalation, carbon_price_growth,
                  discount_rate
             若为None则使用静态模型 (年增长率为0).
+        avg_temp_c : float
+            v6.5: 年均环境温度 (℃)
+        avg_dod : float
+            v6.5: 年均等效DOD
         """
         if scenario_params is None:
             scenario_params = {
@@ -702,22 +797,27 @@ class MicrogridOptimizer:
         om_charging = capex['charging_subtotal'] * OM_RATE['charging']
         om_annual = om_pv + om_ess + om_charging
 
-        # 电池容量逐年衰减
-        annual_degradation = (ESS_CAPACITY_FADE_CALENDAR +
-                              ESS_CAPACITY_FADE_PER_CYCLE * annual_ess_cycles)
+        # v6.5: 复合退化率 — 温度加速日历 + DOD依赖循环
+        annual_degradation = get_battery_yearly_degradation(
+            avg_temp_c + 7.0, annual_ess_cycles, avg_dod)
         ess_degrade_factor = 1.0
 
         dr = scenario_params.get('discount_rate', DISCOUNT_RATE)
         lgr = scenario_params.get('load_growth_rate', 0.0)
         gpe = scenario_params.get('grid_price_escalation', 0.0)
         cpg = scenario_params.get('carbon_price_growth', 0.0)
+        use_logistic = scenario_params.get('load_growth_model', LOAD_GROWTH_MODEL) == 'logistic'
 
         npv_grid_cost = 0.0
         npv_carbon_rev = 0.0
 
         for yr in range(1, PROJECT_LIFE + 1):
-            # 负荷增长 + 电价上涨: 网购电成本逐年增加
-            load_factor = (1.0 + lgr) ** (yr - 1)
+            # 负荷增长: S曲线 或 指数 (文件25 §3)
+            if use_logistic:
+                calendar_year = LOAD_GROWTH_BASE_YEAR + (yr - 1)
+                load_factor = get_load_growth_factor(calendar_year, model='logistic')
+            else:
+                load_factor = (1.0 + lgr) ** (yr - 1)
             price_factor = (1.0 + gpe) ** (yr - 1)
             degrade_penalty = 1.0 + (1.0 - ess_degrade_factor) * 0.3
 
@@ -743,10 +843,22 @@ class MicrogridOptimizer:
             replacement_cost += (capex['pv_inverter'] * REPLACEMENT['inverter'] /
                                  (1 + dr) ** rep_year)
 
-        if ess_cap > 0 and LIFESPAN['ess_battery'] < PROJECT_LIFE:
-            rep_year = LIFESPAN['ess_battery']
-            replacement_cost += (capex['ess_battery'] * REPLACEMENT['ess_battery'] /
-                                 (1 + dr) ** rep_year)
+        if ess_cap > 0:
+            # v6.5: 电池更换基于温度/DOD复合寿命
+            if annual_ess_cycles > 0:
+                cal_fade_r = get_calendar_fade_rate(avg_temp_c + 7.0)
+                cal_life_yr = 0.20 / max(cal_fade_r, 0.005)
+                dod_eff = max(0.10, min(0.90, avg_dod))
+                cycle_life_total = get_cycle_life_at_dod(dod_eff)
+                cycle_life_yr = cycle_life_total / max(annual_ess_cycles, 1.0)
+                batt_life = min(LIFESPAN['ess_battery'], cal_life_yr, cycle_life_yr)
+            else:
+                batt_life = LIFESPAN['ess_battery']
+            y = batt_life
+            while y <= PROJECT_LIFE:
+                replacement_cost += (capex['ess_battery'] * REPLACEMENT['ess_battery'] /
+                                     (1 + dr) ** int(np.ceil(y)))
+                y += batt_life
 
         if ess_pow > 0 and LIFESPAN['ess_pcs'] < PROJECT_LIFE:
             rep_year = LIFESPAN['ess_pcs']
@@ -846,6 +958,89 @@ class MicrogridOptimizer:
                       f"SSR={best_result['self_sufficiency']:.1%}")
 
         return best_result, gbest_pos
+
+    def robust_optimize(self, uncertainty_pv=0.20, uncertainty_load=0.15,
+                        pop_size=30, max_iter=20, n_scenarios=3, verbose=True):
+        """v6.5: 两阶段鲁棒优化 — 全链集成
+
+        使用 RobustOptimizationFramework.from_optimizer() 桥接,
+        在多个不确定性场景下运行PSO, 寻找最恶劣场景NPC最小的鲁棒配置.
+
+        Parameters
+        ----------
+        uncertainty_pv : float
+            PV出力的最大不确定性 (如0.20 = ±20%).
+        uncertainty_load : float
+            负荷的最大不确定性 (如0.15 = ±15%).
+        pop_size : int
+            PSO种群大小.
+        max_iter : int
+            PSO最大迭代数.
+        n_scenarios : int
+            不确定性场景数量 (≥2).
+        verbose : bool
+            是否打印迭代进度.
+
+        Returns
+        -------
+        best_result : dict
+            最恶劣场景下的最优配置评估结果.
+        best_x : np.ndarray
+            [PV_cap, ESS_cap, ESS_power].
+        robust_info : dict
+            鲁棒性分析汇总 (含all_scenarios).
+        """
+        from optimization_comparison import RobustOptimizationFramework
+
+        if verbose:
+            print(f"\n{'='*55}")
+            print(f"两阶段鲁棒优化 (PV不确定±{uncertainty_pv:.0%}, "
+                  f"负荷不确定±{uncertainty_load:.0%}, {n_scenarios}场景)")
+            print(f"{'='*55}")
+
+        # 从当前optimizer构建鲁棒框架
+        robust = RobustOptimizationFramework.from_optimizer(
+            self, uncertainty_pv=uncertainty_pv,
+            uncertainty_load=uncertainty_load, n_scenarios=n_scenarios)
+
+        if verbose:
+            print(f"  不确定性场景集 ({len(robust._uncertainty_sets)}个):")
+            for sc in robust._uncertainty_sets:
+                pv_factor = np.mean(sc['pv']) / max(np.mean(robust.nominal_pv), 0.1)
+                load_factor = np.mean(sc['load']) / max(np.mean(robust.nominal_load), 0.1)
+                print(f"    {sc['name']}: PV×{pv_factor:.2f}, Load×{load_factor:.2f}")
+
+        # PSO鲁棒优化
+        best_result, best_x, best_fit = robust.robust_optimize_pso(
+            pop_size=pop_size, max_iter=max_iter, verbose=verbose)
+
+        # 对标称场景做完整评估
+        nominal_eval = self.evaluate_config(best_x[0], best_x[1], best_x[2])
+
+        # 构建鲁棒性报告
+        robust_info = {
+            'uncertainty_pv': uncertainty_pv,
+            'uncertainty_load': uncertainty_load,
+            'n_scenarios': n_scenarios,
+            'robust_npc': best_fit,
+            'nominal_npc': nominal_eval.get('npc', 0),
+            'npc_robustness_premium': best_fit - nominal_eval.get('npc', 0),
+            'npc_robustness_premium_pct': (
+                (best_fit - nominal_eval.get('npc', 0)) / max(abs(nominal_eval.get('npc', 1)), 1)
+            ),
+            'scenarios': robust._uncertainty_sets,
+        }
+
+        if verbose:
+            print(f"\n  鲁棒优化结果:")
+            print(f"    最优配置: PV={best_x[0]:.0f}kWp, "
+                  f"ESS={best_x[1]:.0f}kWh, Power={best_x[2]:.0f}kW")
+            print(f"    鲁棒NPC (最恶劣场景): {best_fit/1e4:.1f} 万元")
+            print(f"    标称NPC:              {nominal_eval.get('npc', 0)/1e4:.1f} 万元")
+            print(f"    鲁棒性溢价:            {robust_info['npc_robustness_premium']/1e4:.1f} 万元 "
+                  f"({robust_info['npc_robustness_premium_pct']:.1%})")
+
+        return best_result, best_x, robust_info
 
     def print_capex_table(self, result):
         """打印设备级CAPEX明细表"""

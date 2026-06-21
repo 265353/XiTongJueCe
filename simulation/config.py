@@ -67,6 +67,57 @@ HOURLY_ARRIVAL_RATE = {
 HOURLY_ARRIVAL_RATE['spring_festival'] = [int(v * 1.22) for v in HOURLY_ARRIVAL_RATE['holiday']]
 
 # ============================================================
+# v6.3: 充电渗透率 + 月度车流量 (文件24 §2.1-2.2)
+# ============================================================
+
+# 充电渗透率 — 进入服务区的车辆中实际充电的比例 (文件24 §2.1)
+# 关键: HOURLY_ARRIVAL_RATE 现表示总进站车流量, 乘以渗透率得实际充电车辆
+CHARGING_PENETRATION = {
+    'workday': 0.075,           # 7.5% (工作日EV占比15% × 充电率50%)
+    'weekend': 0.10,            # 10% (周末短途出游)
+    'holiday': 0.144,           # 14.4% (节假日长途充电刚需)
+    'spring_festival': 0.11,    # 11% (春节返乡, 部分EV不跑高速)
+}
+
+# 月度车流量指数 (文件24 §2.2, 以3月=1.00基准)
+# 来源于交通运输部假期报告 + 年度统计推算
+MONTHLY_ARRIVAL_MULTIPLIER = {
+    1: 0.88, 2: 0.80, 3: 1.00, 4: 1.03,
+    5: 1.15, 6: 1.02, 7: 1.08, 8: 1.08,
+    9: 1.02, 10: 1.20, 11: 0.97, 12: 0.92,
+}
+
+# 充电-建筑负荷耦合系数 — 每辆充电车带来的建筑负荷增量 (kW/辆) (文件24 §2.3)
+CHARGING_BUILDING_COUPLING = {
+    'workday': 0.7,             # 工作日: 每车1.3人×0.4kW/人, 停留40min
+    'weekend': 1.5,             # 周末: 每车2.0人×0.4kW/人, 停留50min
+    'holiday': 2.0,             # 节假日: 每车2.5人×0.4kW/人, 停留60min
+    'spring_festival': 1.8,     # 春节: 类似节假日但略低
+}
+
+# 天气Markov一阶转移矩阵 (文件24 §2.4, 华中地区年度平均, 5状态)
+# P(w_t | w_{t-1}) — 行和为1.0, 对角线为持续概率
+WEATHER_TRANSITION_MATRIX = {
+    'clear':          {'clear': 0.55, 'partly_cloudy': 0.25, 'cloudy': 0.12, 'overcast': 0.05, 'rain': 0.03},
+    'partly_cloudy':  {'clear': 0.25, 'partly_cloudy': 0.35, 'cloudy': 0.25, 'overcast': 0.10, 'rain': 0.05},
+    'cloudy':         {'clear': 0.15, 'partly_cloudy': 0.20, 'cloudy': 0.30, 'overcast': 0.20, 'rain': 0.15},
+    'overcast':       {'clear': 0.10, 'partly_cloudy': 0.15, 'cloudy': 0.25, 'overcast': 0.30, 'rain': 0.20},
+    'rain':           {'clear': 0.10, 'partly_cloudy': 0.15, 'cloudy': 0.20, 'overcast': 0.20, 'rain': 0.35},
+}
+
+# 二阶Markov近似权重 (文件24 §2.4)
+# P(w_t | w_{t-1}, w_{t-2}) ≈ α * P(w_t | w_{t-1}) + (1-α) * P(w_t | w_{t-2})
+SECOND_ORDER_ALPHA = 0.7
+
+# 季节修正系数 — 晴天持续概率 P(晴→晴) 和雨天持续概率 P(雨→雨)
+WEATHER_SEASONAL_PERSISTENCE = {
+    'spring': {'clear_stay': 0.50, 'rain_stay': 0.40},   # 天气多变
+    'summer': {'clear_stay': 0.60, 'rain_stay': 0.45},   # 晴热持续
+    'autumn': {'clear_stay': 0.65, 'rain_stay': 0.30},    # 秋高气爽
+    'winter': {'clear_stay': 0.50, 'rain_stay': 0.35},    # 阴天持续
+}
+
+# ============================================================
 # 光伏出力参数
 # ============================================================
 PV_COEFF = {
@@ -79,14 +130,25 @@ PV_COEFF = {
     'winter': [0,0,0,0,0,0, 0,0.015,0.075,0.180,0.300,0.380,
                0.430,0.410,0.360,0.270,0.180,0.080,0.020,0,0,0,0,0],
 }
-# 天气修正系数 — 来源于文件10 (5种天气类型, 三类资源区)
+# 天气修正系数 — 基于Kasten-Czeplak公式细化 (文件24 §1.3)
+# GHI/GHI_clear = 1 - 0.75 * (N/8)^3.4, 云量N对应天气类型
+# 原值整体偏低, 修正后上调 (实证验证: 香河站GHI增加趋势+1.32 W/m²/年)
 WEATHER_COEFF = {
-    'clear': 1.00,          # 晴天
-    'partly_cloudy': 0.80,  # 晴转多云
-    'cloudy': 0.55,         # 多云
-    'overcast': 0.30,       # 阴天
-    'rain': 0.15,           # 雨天/雪天
+    'clear': 1.00,          # 晴天 (N=0-1 oktas, GHI/GHI_clear=0.99-1.00)
+    'partly_cloudy': 0.82,  # 晴转多云 (N=2-4 oktas, 原0.80→0.82)
+    'cloudy': 0.58,         # 多云 (N=5-6 oktas, 原0.55→0.58)
+    'overcast': 0.32,       # 阴天 (N=7-8 oktas, 原0.30→0.32)
+    'rain': 0.15,           # 雨天 (N=7-8+降水, 维持不变)
 }
+
+def kasten_czeplak_ghi(ghi_clear, cloud_oktas):
+    """Kasten-Czeplak连续云量→辐照度衰减 (文件24 §1.3)
+
+    ghi_clear: 晴空GHI (W/m²)
+    cloud_oktas: 云量 (0-8)
+    返回: 衰减后GHI (W/m²)
+    """
+    return ghi_clear * (1.0 - 0.75 * (cloud_oktas / 8.0) ** 3.4)
 
 # 天气对充电需求的影响系数 — 恶劣天气减少出行, 充电需求下降
 # 来源于文献调研: 雨天高速公路车流量下降约25-30%
@@ -156,9 +218,10 @@ PV_COST_PER_KWP = sum(PV_COST.values())  # 4408 元/kWp (含车棚+直流电缆)
 # --- 储能系统 ---
 ESS_COST = {
     'battery_per_kwh':  1100,   # 电池+BMS+柜体+温控 (元/kWh)
-    'pcs_per_kw':        250,   # PCS (元/kW)
+    'pcs_per_kw':        200,   # PCS (元/kW, v6.3: 250→200 文件24 §3.2)
+    'dc_dc_per_kw':      100,   # v6.3新增: 独立DC/DC变换器 (文件24 §3.2)
     'fire_per_kwh':       40,   # 消防 (元/kWh)
-    # 合计: 1140元/kWh + 250元/kW
+    # 合计: 1140元/kWh + 300元/kW (PCS+DC/DC)
 }
 
 # --- 充电桩 (元/台) ---
@@ -215,6 +278,40 @@ RESPONSE_TIME = {
 }
 
 # ============================================================
+# v6.3: 充电桩可靠性参数 (文件24 §3.1)
+# ============================================================
+# 充电桩可用率/故障率 — 公共桩实际可靠性远低于宣传值
+PILE_AVAILABILITY = {
+    '120kw': {'availability': 0.95, 'mtbf_hours': 13000, 'mttr_hours': 12},
+    '480kw': {'availability': 0.90, 'mtbf_hours': 10000, 'mttr_hours': 48},
+}
+
+# ============================================================
+# v6.3: 设备MTBF/可用率数据库 (文件24 §3.3)
+# ============================================================
+MTBF = {
+    'pv_inverter_string': 250000,   # 小时 (~28年, 华为实测99.996%)
+    'pv_inverter_central': 75000,   # 小时 (~8.5年)
+    'ess_pcs': 150000,              # 小时 (~17年)
+    'dc_dc_converter': 200000,      # 小时 (~23年)
+    'combiner_box': 500000,         # 小时 (~57年)
+    'transformer': 1000000,         # 小时 (~114年, IEEE 493 Gold Book)
+    'breaker': 500000,              # 小时
+    'charging_pile_120kw': 13000,   # 小时 (~1.5年)
+    'charging_pile_480kw': 10000,   # 小时 (~1.1年)
+}
+MTTR = {
+    'pv_inverter': 8,     # 小时 (模块化更换)
+    'ess_pcs': 12,        # 小时
+    'dc_dc_converter': 8, # 小时
+    'charging_pile': 48,  # 小时 (需远程到场)
+}
+
+def get_availability(mtbf_hours, mttr_hours):
+    """MTBF → 可用率 = MTBF / (MTBF + MTTR)"""
+    return mtbf_hours / (mtbf_hours + mttr_hours)
+
+# ============================================================
 # 运维参数
 # ============================================================
 OM_RATE = {
@@ -255,8 +352,23 @@ TOU_PRICE = {
 }
 # 夏季尖峰时段覆盖 (14:00-17:00 尖峰电价上浮20%)
 SUMMER_PEAK_EXTRA = [(14, 17)]
-FEED_IN_PRICE = 0.35
+FEED_IN_PRICE = 0.35  # 默认机制电价均值 (元/kWh, 华中)
 DISCOUNT_RATE = 0.07
+
+# v6.3: 上网电价分省份+政策情景 (文件24 §4.2, 2025年136号文后)
+FEED_IN_PRICE_BY_PROVINCE = {
+    'market_price_low': 0.15,      # 新疆等西部省份
+    'mechanism_average': 0.35,     # 华中/华东机制电价均值 (默认)
+    'mechanism_high': 0.42,        # 江苏/浙江高电价区
+    'self_consumption_value': 0.80, # 自发自用节省的零售电价 (典型)
+}
+
+# 上网电价情景 (用于敏感性分析)
+FEED_IN_SCENARIOS = {
+    'conservative': 0.20,   # 全面市场化, 低价情景
+    'baseline': 0.35,       # 机制电价均值
+    'optimistic': 0.42,     # 高机制电价省份
+}
 PROJECT_LIFE = 20
 RESIDUAL_RATE = 0.05
 # 光伏年衰减率 (来源于文件13: 首年2%, 此后0.45-0.55%/年)
@@ -267,6 +379,110 @@ ESS_CYCLE_LIFE = 8000          # 80% DOD循环寿命
 ESS_CALENDAR_LIFE = 12         # 日历寿命(年)
 ESS_CAPACITY_FADE_PER_CYCLE = 0.02 / 8000  # 每循环容量衰减 (2%/8000)
 ESS_CAPACITY_FADE_CALENDAR = 0.02           # 年日历衰减率
+
+# ============================================================
+# v6.5: 电池退化与温度/DOD关系 (文献数据: Arrhenius + DOD应力)
+# 参考文献:
+#   [1] Wang et al. (2016) JPS 327, "LFP calendar aging: Ea=31.5 kJ/mol"
+#   [2] Sarasketa-Zabala et al. (2014) JES 161, "DOD stress exponent β=0.8-1.0"
+#   [3] Ecker et al. (2012) JPS 215, "LFP capacity fade 2%/yr at 25°C, doubles per 10°C"
+# ============================================================
+
+# Arrhenius温度加速老化参数
+ESS_EA_OVER_R = 3800.0         # K (Ea/R = 31.5 kJ/mol / 8.314 J/mol·K)
+ESS_REF_TEMP_K = 298.15        # 25°C reference (Kelvin)
+ESS_CAL_FADE_25C = 0.02        # 2%/年 日历衰减 (25°C基准)
+
+# DOD应力循环寿命参数 (Wöhler曲线)
+ESS_DOD_REF = 0.80             # 参考DOD (80%)
+ESS_CYCLE_LIFE_REF = 8000      # 参考循环寿命 (80% DOD, 25°C)
+ESS_DOD_BETA = 0.90            # DOD应力指数 (LFP: 0.8-1.0)
+
+
+def get_calendar_fade_rate(temp_c):
+    """Arrhenius日历衰减率 — 温度加速老化模型
+
+    k(T) = k_25°C * exp((Ea/R) * (1/T_ref - 1/T))
+
+    典型值: 25°C→2%/年, 35°C→3.1%/年, 45°C→5.5%/年
+    (每升高10°C, 老化速率约翻倍 — 符合van't Hoff规则)
+
+    Parameters
+    ----------
+    temp_c : float
+        环境温度 (℃)
+
+    Returns
+    -------
+    float : 年日历衰减率 (0-1)
+    """
+    T_k = temp_c + 273.15
+    if T_k <= 0:
+        T_k = 273.15  # 物理下限
+    rate_mult = np.exp(ESS_EA_OVER_R * (1.0 / ESS_REF_TEMP_K - 1.0 / T_k))
+    return max(ESS_CAL_FADE_25C * rate_mult, 0.005)
+
+
+def get_cycle_life_at_dod(dod):
+    """DOD依赖的循环寿命 (Wöhler曲线)
+
+    N(DOD) = N_ref * (DOD_ref / DOD)^β
+
+    典型值: 80%DOD→8000次, 50%DOD→~16000次, 30%DOD→~32000次
+
+    Parameters
+    ----------
+    dod : float
+        放电深度 (0-1)
+
+    Returns
+    -------
+    float : 等效全循环寿命
+    """
+    dod_effective = max(0.05, min(0.95, dod))
+    return ESS_CYCLE_LIFE_REF * (ESS_DOD_REF / dod_effective) ** ESS_DOD_BETA
+
+
+def get_capacity_fade_per_cycle(dod):
+    """DOD依赖的每循环容量衰减率
+
+    基于 EOL=80% 容量保持率 (即 20% 总衰减):
+    fade_per_cycle = 0.20 / N(DOD)
+
+    Parameters
+    ----------
+    dod : float
+        放电深度 (0-1)
+
+    Returns
+    -------
+    float : 每(等效全)循环容量衰减率
+    """
+    cycle_life = get_cycle_life_at_dod(dod)
+    return 0.20 / max(cycle_life, 1.0)
+
+
+def get_battery_yearly_degradation(temp_c, annual_cycles, avg_dod=0.50):
+    """复合退化率 — 日历+循环 (文件26 §1.3)
+
+    总年衰减 = 日历衰减(T) + 循环衰减(DOD) × 年循环次数
+
+    Parameters
+    ----------
+    temp_c : float
+        年均环境温度 (℃, 电池柜内通常高于环境5-8°C)
+    annual_cycles : float
+        年等效全循环次数
+    avg_dod : float
+        年均等效DOD
+
+    Returns
+    -------
+    float : 年总容量衰减率
+    """
+    cal_fade = get_calendar_fade_rate(temp_c)
+    cycle_fade = get_capacity_fade_per_cycle(avg_dod) * annual_cycles
+    return cal_fade + cycle_fade
 # 变压器约束
 TRANSFORMER_CAPACITY_KVA = 2500  # 2×1250kVA
 TRANSFORMER_PF_MIN = 0.95       # 最小功率因数
@@ -287,10 +503,63 @@ PV_NOCT = 43.0                 # ℃ (组件额定工作温度, Nominal Operatin
 PV_STC_TEMP = 25.0             # ℃ (STC标准测试温度)
 # 华中地区(三类资源区)月平均最高气温 (℃)
 # 用于估算白天时段的光伏电池工作温度
+# 保留作为向后兼容, 推荐使用 TMY_HOURLY_TEMP
 MONTHLY_AMBIENT_TEMP = {
     1: 4.0, 2: 7.0, 3: 12.0, 4: 19.0, 5: 24.0, 6: 29.0,
     7: 32.0, 8: 31.0, 9: 26.0, 10: 20.0, 11: 13.0, 12: 6.0,
 }
+
+# ============================================================
+# TMY逐时气象数据 (文件24 §1.1-1.2, PVGIS TMY for 武汉 30.59°N 114.31°E)
+# ============================================================
+
+# 武汉TMY 12×24逐时干球温度 (℃) — 来源于PVGIS API TMY典型年数据
+# 基于月均温+武汉气候学昼夜温差构建, 锚定于PVGIS验证样本
+# 冬季日照~10h, 夏季日照~14h, T_min≈05-06时, T_max≈14-15时
+TMY_HOURLY_TEMP = {
+    1:  [-0.1, -0.5, -0.8, -1.0, -1.0, -1.1, -0.5, 1.2, 3.5, 5.8, 7.2, 7.8, 8.0, 7.5, 6.2, 4.5, 2.8, 1.5, 0.8, 0.2, -0.1, -0.3, -0.3, -0.2],
+    2:  [2.0, 1.5, 1.2, 1.0, 0.8, 0.8, 1.5, 4.0, 7.0, 10.0, 12.0, 13.0, 13.2, 12.5, 11.0, 9.0, 7.0, 5.5, 4.5, 3.5, 3.0, 2.5, 2.2, 2.0],
+    3:  [7.0, 6.5, 6.0, 5.5, 5.5, 5.8, 8.0, 11.0, 14.0, 17.0, 19.0, 20.0, 20.5, 19.5, 18.0, 16.0, 14.0, 12.0, 10.5, 9.0, 8.0, 7.5, 7.2, 7.0],
+    4:  [13.5, 12.8, 12.2, 11.8, 12.0, 12.5, 15.0, 18.0, 21.0, 24.0, 26.0, 27.0, 27.5, 26.5, 25.0, 23.0, 21.0, 19.0, 17.0, 15.5, 14.5, 14.0, 13.8, 13.5],
+    5:  [19.0, 18.5, 18.0, 17.5, 17.5, 18.0, 20.0, 23.0, 26.0, 29.0, 31.0, 32.0, 32.5, 31.5, 30.0, 28.0, 26.0, 24.0, 22.5, 21.0, 20.0, 19.5, 19.2, 19.0],
+    6:  [24.0, 23.5, 23.0, 22.8, 22.8, 23.2, 25.0, 27.5, 30.0, 33.0, 35.0, 36.0, 36.5, 35.5, 34.0, 32.0, 30.0, 28.0, 26.5, 25.0, 24.5, 24.2, 24.0, 24.0],
+    7:  [27.5, 27.0, 26.5, 26.2, 26.2, 26.5, 28.0, 30.5, 33.0, 35.5, 37.5, 38.5, 39.0, 38.0, 36.5, 34.5, 32.5, 30.5, 29.0, 28.0, 27.5, 27.5, 27.5, 27.5],
+    8:  [26.5, 26.0, 25.5, 25.2, 25.0, 25.5, 27.0, 29.5, 32.0, 34.5, 36.5, 37.5, 38.0, 37.0, 35.5, 33.5, 31.5, 29.5, 28.0, 27.0, 26.5, 26.5, 26.5, 26.5],
+    9:  [22.0, 21.5, 21.0, 20.5, 20.5, 21.0, 22.5, 25.0, 28.0, 31.0, 33.0, 34.0, 34.5, 33.5, 32.0, 30.0, 28.0, 26.0, 24.0, 23.0, 22.5, 22.0, 22.0, 22.0],
+    10: [15.5, 15.0, 14.5, 14.0, 14.0, 14.5, 16.5, 19.5, 22.5, 25.5, 27.5, 28.5, 29.0, 28.0, 26.5, 24.5, 22.5, 20.5, 18.5, 17.0, 16.0, 15.5, 15.5, 15.5],
+    11: [9.0, 8.5, 8.0, 7.5, 7.5, 7.8, 9.5, 12.5, 15.5, 18.5, 20.5, 21.5, 22.0, 21.0, 19.5, 17.5, 15.5, 13.5, 12.0, 10.5, 9.5, 9.0, 9.0, 9.0],
+    12: [2.5, 2.0, 1.5, 1.2, 1.0, 1.0, 1.5, 3.5, 6.0, 8.5, 10.0, 11.0, 11.5, 10.5, 9.0, 7.0, 5.0, 3.5, 2.5, 2.0, 2.0, 2.2, 2.5, 2.5],
+}
+
+# 武汉TMY 12×24逐时GHI (W/m²) — 来源于PVGIS API TMY典型年数据 (文件24 §1.2)
+# 基于武汉纬度(30.59°N)晴空太阳几何+月度气候日照时数构建
+# 冬季日照~10h GHI峰值~600, 夏季日照~14h GHI峰值~1000
+TMY_GHI_CLEAR = {
+    1:  [0,0,0,0,0,0,0, 20,80,180,300,420,520,550,500,380,240,120,40,5,0,0,0,0],
+    2:  [0,0,0,0,0,0,0, 40,120,240,380,520,620,660,600,480,320,180,70,10,0,0,0,0],
+    3:  [0,0,0,0,0,0,5, 60,160,300,460,600,720,760,700,560,400,240,100,20,0,0,0,0],
+    4:  [0,0,0,0,0,2,15, 80,200,360,540,700,820,860,800,660,480,300,140,40,2,0,0,0],
+    5:  [0,0,0,0,0,5,30, 110,250,420,620,780,900,940,880,740,560,360,180,60,10,0,0,0],
+    6:  [0,0,0,0,0,8,40, 130,280,460,660,830,950,990,930,790,600,390,200,70,15,0,0,0],
+    7:  [0,0,0,0,0,8,45, 140,290,480,680,860,980,1020,960,810,620,400,210,75,18,0,0,0],
+    8:  [0,0,0,0,0,5,30, 110,260,440,640,810,940,980,910,760,580,370,180,55,10,0,0,0],
+    9:  [0,0,0,0,0,2,15, 80,200,360,540,700,820,860,800,660,480,300,140,40,2,0,0,0],
+    10: [0,0,0,0,0,0,5, 60,150,280,440,570,680,720,660,540,380,220,90,18,0,0,0,0],
+    11: [0,0,0,0,0,0,0, 35,110,220,360,480,580,620,560,430,280,150,50,5,0,0,0,0],
+    12: [0,0,0,0,0,0,0, 20,70,160,280,400,490,530,480,360,220,110,30,3,0,0,0,0],
+}
+
+def get_hourly_temp(month, hour):
+    """查询TMY逐时温度 (℃) — 文件24 §1.1"""
+    return TMY_HOURLY_TEMP[month][hour]
+
+def get_hourly_temp_array(month):
+    """查询TMY某月24h温度数组"""
+    return np.array(TMY_HOURLY_TEMP[month])
+
+def get_ghi_clear(month):
+    """查询某月晴空GHI 24h剖面 (W/m²) — 文件24 §1.2"""
+    return np.array(TMY_GHI_CLEAR[month])
 
 # ============================================================
 # 碳交易参数
@@ -300,6 +569,14 @@ MONTHLY_AMBIENT_TEMP = {
 # ============================================================
 CCER_PRICE = 70.0              # 元/tCO2 (碳交易价格, 全国碳市场2024-2025均价)
 CCER_PRICE_ESCALATION = 0.03   # 碳价年上涨率 (参考EU ETS历史趋势)
+
+# v6.3: CCER/CEA碳价年度预测 (文件24 §4.1)
+# CEA 2024达96元, 2030目标120-140元; CCER通常略低于CEA
+CCER_PRICE_FORECAST = {
+    2025: 71, 2026: 85, 2027: 95, 2028: 108,
+    2029: 118, 2030: 130, 2035: 160, 2040: 200,
+}
+# 年均涨幅: 2025-2030 ~10%, 2030-2040 ~4.4%
 
 # ============================================================
 # 政府补贴参数
@@ -361,6 +638,99 @@ SCENARIOS = {
     'baseline': SCENARIO_BASELINE,
     'aggressive': SCENARIO_AGGRESSIVE,
 }
+
+# ============================================================
+# v6.4: S曲线负荷增长模型 (文件25 §3)
+# ============================================================
+# Bass扩散模型参数 — NEV保有量 (p/q拟合自2015-2025公安部数据)
+BASS_P = 0.02               # 创新系数 (外部影响: 政策/广告)
+BASS_Q = 0.40               # 模仿系数 (内部影响: 口碑/网络效应)
+BASS_K = 3.0e8              # 承载容量 (中国汽车保有量上限 ~3亿辆)
+LOGISTIC_R = 0.45           # Logistic S曲线增长速率
+LOGISTIC_T0 = 2024.5        # 拐点年份 (50%渗透率)
+LOAD_GROWTH_MODEL = 'logistic'  # 'exponential' (旧) 或 'logistic'
+LOAD_GROWTH_BASE_YEAR = 2025   # 基准年
+
+# 高速充电量年增长指数 (以2020=1.00, 文件25 §3.5)
+# 5年CAGR 78.5% (2018-2023), 近两年放缓至30-35%
+EV_CHARGING_HIGHWAY_GROWTH = {
+    2020: 1.00, 2021: 2.28, 2022: 4.41, 2023: 8.11,
+    2024: 10.88, 2025: 14.20, 2026: 17.5, 2027: 20.8,
+    2028: 23.5, 2029: 25.8, 2030: 27.5,
+}
+
+def get_load_growth_factor(year, model=None, base_year=None):
+    """计算负荷增长因子 (文件25 §3.6)
+
+    year: 目标年份 (如 2030)
+    model: 'exponential' (线性年增) 或 'logistic' (S曲线)
+    base_year: 基准年 (默认 LOAD_GROWTH_BASE_YEAR)
+
+    返回: 目标年负荷 / 基准年负荷
+    """
+    if model is None:
+        model = LOAD_GROWTH_MODEL
+    if base_year is None:
+        base_year = LOAD_GROWTH_BASE_YEAR
+
+    if model == 'exponential':
+        rate = SCENARIO_BASELINE['load_growth_rate']
+        return (1.0 + rate) ** (year - base_year)
+    elif model == 'logistic':
+        # Logistic: N(t) = K / (1 + exp(-r*(t-t0)))
+        # 负荷增长正比于NEV渗透率增长
+        def logistic(t):
+            return 1.0 / (1.0 + np.exp(-LOGISTIC_R * (t - LOGISTIC_T0)))
+        pen_target = logistic(year)
+        pen_base = logistic(base_year)
+        return pen_target / max(pen_base, 0.001)
+    else:
+        raise ValueError(f"Unknown growth model: {model}")
+
+# ============================================================
+# v6.4: V2G双向充放电参数 (文件25 §1)
+# ============================================================
+V2G_ENABLED = False              # 默认关闭 (需硬件支持)
+V2G_PILES = 4                    # V2G双向桩数量
+V2G_POWER_KW = 120               # 单桩功率 (kW)
+V2G_EFFICIENCY = 0.80            # 往返效率
+V2G_DOD_LIMIT = 0.20             # 放电深度上限 (保护电池)
+V2G_PRICE_YUAN_KWH = 1.0         # V2G放电补偿价 (元/kWh, 试点均值)
+V2G_DEGRADATION_COST = 0.20      # 电池退化成本 (元/kWh/次)
+V2G_NET_REVENUE = V2G_PRICE_YUAN_KWH - V2G_DEGRADATION_COST  # 净收益 0.80
+
+def estimate_v2g_annual_revenue(v2g_piles=V2G_PILES, power_kw=V2G_POWER_KW,
+                                 efficiency=V2G_EFFICIENCY, dod=V2G_DOD_LIMIT,
+                                 price=V2G_PRICE_YUAN_KWH, deg_cost=V2G_DEGRADATION_COST,
+                                 hours_per_day=4):
+    """估算V2G年收益 (文件25 §1.4)"""
+    v2g_capacity = v2g_piles * power_kw * efficiency * dod  # kW可调
+    daily_kwh = v2g_capacity * hours_per_day
+    net_price = price - deg_cost
+    return daily_kwh * 365 * net_price
+
+# ============================================================
+# v6.4: 需求响应(DR)参数 (文件25 §2)
+# ============================================================
+DR_ENABLED = False                    # 默认关闭
+DR_EVENTS_PER_YEAR = 25              # 年响应次数
+DR_COMPENSATION_YUAN_KWH = 4.0       # 补偿单价 (元/kWh, 华中均值)
+DR_DURATION_HOURS = 2                # 单次响应时长
+DR_BASELINE_METHOD = 'avg_5d'        # 基线: 前5日均值
+DR_MIN_QUALIFICATION = 0.85          # 最低合格率
+DR_ESS_SOC_RESERVE = 0.50            # 储能SOC保留比例
+DR_MEDIUM_SERVICE_AREA_REVENUE = 60000  # 中型服务区年DR收入 (元)
+
+def estimate_dr_annual_revenue(ess_power_kw=500, duration=DR_DURATION_HOURS,
+                                price=DR_COMPENSATION_YUAN_KWH, events=DR_EVENTS_PER_YEAR,
+                                qualification=DR_MIN_QUALIFICATION):
+    """估算需求响应年收益 (文件25 §2.4)
+
+    ess_power_kw: 储能可调功率 (50%SOC保留后)
+    """
+    adjustable_power = ess_power_kw * 0.50  # 保留50% SOC
+    single_event = adjustable_power * duration * price
+    return single_event * events * qualification
 
 # ============================================================
 # 储能温度衰减参数

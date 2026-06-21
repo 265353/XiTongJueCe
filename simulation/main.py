@@ -601,6 +601,68 @@ def run_dashboard_from_data(mc_scenarios, opt_result, opt=None, calendar_ctx=Non
     return output
 
 
+def main_robust():
+    """v6.5 两阶段鲁棒优化: PSO标称优化 + 鲁棒优化 + 对比分析"""
+    print("=" * 60)
+    print("Highway Service Area PV-Storage-Charging Simulation v6.5")
+    print("Mode: Two-Stage Robust Optimization")
+    print("=" * 60)
+
+    from optimization_comparison import RobustOptimizationFramework
+
+    SEED = 42
+    calendar_ctx = CalendarContext(seed=SEED)
+    calendar_ctx.print_summary()
+
+    # Step 1: Monte Carlo (reduced runs for speed)
+    print("\n[Step 1] Monte Carlo Charging Load Simulation...")
+    mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
+    mc_scenarios = mc_sim.simulate_all_scenarios(n_runs=2000)
+
+    # Step 2: Standard PSO optimization
+    print("\n[Step 2] Standard PSO Optimization (nominal scenario)...")
+    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
+                             calendar_ctx=calendar_ctx, use_econ_model=True)
+    nominal_result, nominal_x = opt.optimize_pso(pop_size=30, max_iter=20, verbose=True)
+
+    print(f"\n  Nominal optimal: PV={nominal_x[0]:.0f}kWp, "
+          f"ESS={nominal_x[1]:.0f}kWh, Power={nominal_x[2]:.0f}kW")
+    print(f"  Nominal NPC: {nominal_result['npc']/1e4:.1f}万元, "
+          f"SSR: {nominal_result['self_sufficiency']:.1%}")
+
+    # Step 3: Robust optimization
+    print("\n[Step 3] Two-Stage Robust Optimization (PV ±20%, Load ±15%)...")
+    robust_result, robust_x, robust_info = opt.robust_optimize(
+        uncertainty_pv=0.20, uncertainty_load=0.15,
+        pop_size=30, max_iter=20, n_scenarios=3, verbose=True)
+
+    # Step 4: Comparison
+    print(f"\n{'='*55}")
+    print(f"标称 vs 鲁棒 配置对比")
+    print(f"{'='*55}")
+    print(f"{'指标':<20} {'标称PSO':>15} {'鲁棒PSO':>15} {'差异':>15}")
+    print(f"{'-'*65}")
+    print(f"{'PV (kWp)':<20} {nominal_x[0]:>15.0f} {robust_x[0]:>15.0f} "
+          f"{robust_x[0]-nominal_x[0]:>+15.0f}")
+    print(f"{'ESS (kWh)':<20} {nominal_x[1]:>15.0f} {robust_x[1]:>15.0f} "
+          f"{robust_x[1]-nominal_x[1]:>+15.0f}")
+    print(f"{'ESS Power (kW)':<20} {nominal_x[2]:>15.0f} {robust_x[2]:>15.0f} "
+          f"{robust_x[2]-nominal_x[2]:>+15.0f}")
+    print(f"{'NPC (万元)':<20} {nominal_result['npc']/1e4:>15.1f} "
+          f"{robust_info['robust_npc']/1e4:>15.1f} "
+          f"{robust_info['npc_robustness_premium']/1e4:>+15.1f}")
+    print(f"{'SSR':<20} {nominal_result['self_sufficiency']:>15.1%} "
+          f"{robust_info['robust_npc']/1e4:>15}")
+
+    print(f"\n  鲁棒性溢价: {robust_info['npc_robustness_premium']/1e4:.1f} 万元 "
+          f"({robust_info['npc_robustness_premium_pct']:.1%})")
+    print(f"  → 为抵御PV±20%/负荷±15%不确定性, 需额外投资")
+
+    print("\n" + "=" * 60)
+    print("Robust Optimization Complete!")
+    print("=" * 60)
+
+
 def main_v6():
     """v6 全流程: 全部6大研究任务 + 交叉验证 + 经济模型 + 仪表盘"""
     print("=" * 60)
@@ -768,6 +830,8 @@ def main(mode='full'):
 
     if mode == 'v6':
         return main_v6()
+    if mode == 'robust':
+        return main_robust()
 
     # 创建统一日历上下文 (真实2025年日历 + Markov天气链)
     calendar_ctx = CalendarContext(seed=SEED)
@@ -845,9 +909,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(
         description='Highway Service Area PV-Storage-Charging Simulation v6')
     parser.add_argument('--mode', type=str, default='fast',
-                       choices=['fast', 'nsga2', 'full', 'v6'],
+                       choices=['fast', 'nsga2', 'full', 'v6', 'robust'],
                        help='Simulation mode: fast (PSO only), '
                             'nsga2 (PSO + NSGA-II), full (all modules), '
-                            'v6 (full pipeline + new modules)')
+                            'v6 (full pipeline + new modules), '
+                            'robust (two-stage robust optimization)')
     args = parser.parse_args()
     main(mode=args.mode)

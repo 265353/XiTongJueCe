@@ -1,6 +1,121 @@
 # Handover — 高速服务区光储充一体化仿真
 
-> 最后更新: 2026-06-21 (v6.2, 数据驱动仿真真实性增强)
+> 最后更新: 2026-06-21 (v6.5, 3项待解决限制全部修复)
+
+---
+
+## [2026-06-21] v6.5 三项待解决限制修复 — 电池退化 + FCFS可靠性 + 鲁棒优化全链集成
+
+**Branch**: master | **Changed by**: 265353 | **Mode**: full (6 files)
+
+### What Changed
+
+| File | Category | Description |
+|------|----------|-------------|
+| `config.py` | Feature | Arrhenius温度加速老化模型 (`get_calendar_fade_rate`), Wöhler DOD应力循环寿命 (`get_cycle_life_at_dod`), 复合退化率 (`get_battery_yearly_degradation`), 文献参数 (Ea/R=3800K, β=0.9) |
+| `economic_model.py` | Feature | `replacement_schedule` 三重寿命 (日历温度/DOD循环/制造商), `npc_from_aggregates` 新参数 `avg_temp_c`/`avg_dod` |
+| `capacity_optimization.py` | Feature | 365天仿真追踪日均DOD+温度, 传入经济模型; `robust_optimize()` 方法 — 桥接 RobustOptimizationFramework |
+| `mc_charging_load.py` | Feature | `_precompute_failures()` — Poisson故障生成 (MTBF/MTTR), FCFS排队过滤故障桩 (avail_mask), `n_failure_rejected` 统计 |
+| `optimization_comparison.py` | Feature | `RobustOptimizationFramework.from_optimizer()` 桥接仿真全链, 多场景不确定集, `robust_optimize_pso()` PSO鲁棒优化, `_evaluate_with_scenario()` 场景评估桥接 |
+| `main.py` | Feature | `--mode robust` + `main_robust()` — 标称PSO + 鲁棒PSO + 对比分析 |
+
+### 解决的三项限制
+
+| 限制 | 解决方案 | 关键技术点 |
+|------|---------|-----------|
+| 电池退化与温度/DOD关系 | Arrhenius日历老化 + Wöhler循环寿命 | Ea/R=3800K, β=0.9, 柜内温度=环境+7°C, 复合退化率替代固定2%/年 |
+| 充电桩FCFS队列-可靠性 | Poisson故障 + MTTR修复 → 过滤可用桩 | 120kW: MTBF=13000h MTTR=12h (95%), 480kW: MTBF=10000h MTTR=48h (90%) |
+| 两阶段鲁棒优化-全链集成 | from_optimizer()桥接 + robust_optimize_pso | 3场景不确定集 (标称/最恶劣/随机), min-max NPC目标 |
+
+### 数据来源
+
+| 参数 | 文献出处 | 关键值 |
+|------|---------|--------|
+| Ea/R=3800K | Wang et al. (2016) JPS 327, LFP calendar aging | 31.5 kJ/mol |
+| β=0.9 | Sarasketa-Zabala et al. (2014) JES 161, DOD stress | LFP: 0.8-1.0 |
+| 2%/yr at 25°C | Ecker et al. (2012) JPS 215, capacity fade baseline | doubles per 10°C |
+| MTBF/MTTR | config.py PILE_AVAILABILITY (文件24 §3.1) | 120kW:95%, 480kW:90% |
+| 鲁棒优化框架 | 中国电机工程学报2025, NC&CG思想 | uncertainty PV±20%, Load±15% |
+
+### 模型验证
+
+```
+Calendar fade at 25°C: 2.00%/yr  (baseline)
+Calendar fade at 35°C: 3.02%/yr  (×1.5, van't Hoff rule)
+Cycle life at 80% DOD: 8,000     (reference)
+Cycle life at 50% DOD: 12,212    (×1.5)
+Cycle life at 30% DOD: 19,340    (×2.4)
+Yearly degradation (25°C, 300cyc, 50% DOD): 2.49%/yr
+```
+
+---
+
+## [2026-06-21] v6.4 V2G/DR/S曲线/ABM标定 — 文件25调研结果全量集成
+
+**Branch**: master | **Changed by**: 265353 | **Mode**: full (4 files, +165/-12)
+
+### What Changed
+
+| File | Category | Description |
+|------|----------|-------------|
+| `config.py` | Feature | Bass/Logistic S曲线参数 + `get_load_growth_factor()`, V2G参数预留 (默认关闭), DR参数 + `estimate_dr_annual_revenue()`, `estimate_v2g_annual_revenue()` |
+| `capacity_optimization.py` | Feature | `_calculate_npc_detailed` 支持 logistic增长模式 (替代指数) |
+| `economic_model.py` | Feature | `npc_from_aggregates` 新增 `annual_dr_revenue` 参数 + S曲线负荷增长 + DR收入年涨2% |
+| `building_load_abm.py` | Feature | MONTHLY_VISITOR_FACTOR (客流月度波动), 随机出勤率 N(0.72,0.05²), `calc_ashrae_metrics()`, `calibrate_with_field_data()` |
+
+### Why
+
+文件25调研完成V2G、需求响应、S曲线负荷增长、ABM实地标定4项数据。按优先级实施: S曲线(高/低难度) → DR(中/中难度) → V2G(参数预留) → ABM(季节性+校准框架).
+
+### 数据来源映射 (新增)
+
+| 参数 | 文件25出处 | 关键值 |
+|------|----------|--------|
+| BASS_P/Q/K, LOGISTIC_R/T0 | §3.2-3.3 | p=0.02 q=0.40 K=3亿 r=0.45 t0=2024.5 |
+| DR_ENABLED/EVENTS/COMPENSATION | §2.1-2.5 | 25次/年 4元/kWh 85%合格率 |
+| V2G_ENABLED/PILES/POWER | §1.1-1.5 | 4桩 120kW 80%效率 0.80元净收益 |
+| MONTHLY_VISITOR_FACTOR | §4.1, §4.7 | 1月0.75→7月1.25 |
+| ASHRAE校准 (NMBE/CVRMSE) | §4.5 | ±5%/≤15%合格, ±3%/≤10%优秀 |
+
+---
+
+## [2026-06-21] v6.3 调研数据全量集成 — 12项数据→代码
+
+**Branch**: master | **Changed by**: 265353 | **Mode**: full (7 files, +896/-240)
+
+### What Changed
+
+| File | Category | Description |
+|------|----------|-------------|
+| `config.py` | Data | Kasten-Czeplak天气系数, TMY逐时温度+GHI (12×24), 充电渗透率, 月度车流量指数, 充-建耦合, Markov转移矩阵+季节修正, 充电桩可用率, DC/DC成本拆分, MTBF数据库, 碳价预测表, 上网电价分省份+政策情景 |
+| `pv_generation.py` | Feature | TMY逐时温度+GHI输入, Kasten-Czeplak云量衰减, `use_tmy` 开关 |
+| `calendar_utils.py` | Feature | 转移矩阵模式 (5×5+季节修正+二阶Markov近似α=0.7), 目标分布混合校准 |
+| `mc_charging_load.py` | Feature | 月度车流量调节 `MONTHLY_ARRIVAL_MULTIPLIER` |
+| `capacity_optimization.py` | Feature | 充电-建筑耦合负荷 `CHARGING_BUILDING_COUPLING` |
+| `topology_comparison.py` | Refactor | MTBF-based组件可靠度 (替代硬编码) |
+| `economic_model.py` | Refactor | CCER碳价预测表 (替代指数增长式) |
+
+### Why
+
+DATA_REQUIREMENTS.md 12项数据全部完成调研 (文件24), 但代码未应用。v6.3系统性将12项调研结果集成到仿真链: 气象(1.1-1.3)/交通(2.1-2.4)/设备(3.1-3.3)/市场政策(4.1-4.2).
+
+### 已知限制更新
+
+**已解决 (v6.3+v6.4):**
+- [v6.3] 逐时环境温度 → TMY_HOURLY_TEMP (武汉12×24)
+- [v6.3] 辐照度反推 → TMY_GHI_CLEAR + Kasten-Czeplak
+- [v6.3] 天气修正系数 → Kasten-Czeplak公式细化
+- [v6.3] 拓扑可靠性 → MTBF串联模型
+- [v6.3] 碳价固定 → CCER_PRICE_FORECAST 2025-2040
+- [v6.3] 上网电价固定 → FEED_IN_SCENARIOS 三级
+- [v6.4] V2G → 参数预留 (V2G_ENABLED=False)
+- [v6.4] 需求侧响应 → DR收入模块
+- [v6.4] 线性负荷增长 → S曲线 logistic模型
+- [v6.4] ABM标定 → 月度波动+随机出勤+ASHRAE校准
+
+**仍待解决 (需外部条件):**
+- V2G双向充放电 → 参数已预留, 需硬件确定后启用
+- ABM实地校准 → ASHRAE框架就绪, 需实测逐时负荷数据
 
 ---
 
@@ -356,17 +471,23 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 - [v6.2] 残值率: 统一5% → 分项 PV 10%/ESS 5%/Charging 5% (文件13)
 - [v6.2] 上网电价: 固定0.35 → FEED_IN_PRICE_ESCALATION=1%/年
 - [v6.2] 建筑负荷: 固定季节曲线 → ABM+校准 (v6.1)
+- [v6.3] 逐时环境温度 → TMY_HOURLY_TEMP (武汉12×24)
+- [v6.3] 辐照度反推 → TMY_GHI_CLEAR + Kasten-Czeplak
+- [v6.3] 天气修正系数 → Kasten-Czeplak公式细化
+- [v6.3] 拓扑可靠性 → MTBF串联模型
+- [v6.3] 碳价固定 → CCER_PRICE_FORECAST 2025-2040
+- [v6.3] 上网电价固定 → FEED_IN_SCENARIOS 三级
+- [v6.4] V2G → 参数预留 (V2G_ENABLED=False)
+- [v6.4] 需求侧响应 → DR收入模块
+- [v6.4] 线性负荷增长 → S曲线 logistic模型
+- [v6.4] ABM标定 → 月度波动+随机出勤+ASHRAE校准
+- [v6.5] 电池退化 → Arrhenius温度加速 + Wöhler DOD应力 (Ea/R=3800K, β=0.9)
+- [v6.5] FCFS可靠性 → Poisson故障模型 + MTTR修复 + 可用桩过滤
+- [v6.5] 鲁棒优化 → from_optimizer()桥接 + robust_optimize_pso() + --mode robust
 
-**仍待解决 (数据不足):**
-- 逐时环境温度 → 需接入PVGIS API获取TMY数据 (文件14提供方法)
-- Sandia模型辐照度峰值 → 需外部GHI数据
-- 电池退化与温度/DOD关系 → 文献中有但项目数据集缺失
-- 充电桩FCFS队列 → 当前算法可接受, 风险/收益比低
-- V2G双向充放电 → 未建模
-- 需求侧响应收益 → 未包含
-- 负荷增长线性假设 → 实际可能呈S曲线
-- 两阶段鲁棒优化 → 框架已有但未与仿真全链集成
-- ABM参数 → 基于典型值, 未对特定服务区实地标定
+**仍待解决 (需外部条件):**
+- V2G双向充放电 → 参数已预留, 需硬件确定后启用
+- ABM实地校准 → ASHRAE框架就绪, 需实测逐时负荷数据
 
 ---
 
