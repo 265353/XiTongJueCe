@@ -203,6 +203,8 @@ class MicrogridOptimizer:
         total_loss_of_load = 0.0
         total_ess_cycles = 0.0
 
+        soc = 0.5  # v6.2: SOC跨天连续 (verify路径)
+
         for d in range(365):
             season = seasons_seq[d*24]
             pv_profile = pv_coeff_seq[d*24:(d+1)*24] * pv_cap
@@ -210,7 +212,10 @@ class MicrogridOptimizer:
 
             tou_hourly = tou_seq[d*24:(d+1)*24]
             result = self.simulate_daily_operation(pv_profile, load_profile, season,
-                                                   tou_prices=tou_hourly)
+                                                   tou_prices=tou_hourly,
+                                                   initial_soc=soc,
+                                                   foresight_horizon=24)
+            soc = result['final_soc']
             total_grid_import += result['grid_import'].sum()
             total_grid_export += result['grid_export'].sum()
             total_pv_gen += pv_profile.sum()
@@ -276,7 +281,8 @@ class MicrogridOptimizer:
         return charging * weather_chg + building * bldg_coeff * weather_bldg
 
     def simulate_daily_operation(self, pv_profile, load_profile, season='spring',
-                                  tou_prices=None):
+                                  tou_prices=None, initial_soc=None,
+                                  foresight_horizon=24):
         """TOU感知最优调度 — 24h迭代套利算法
 
         核心逻辑: 在已知24h PV+负荷曲线和分时电价的前提下,
@@ -329,7 +335,8 @@ class MicrogridOptimizer:
                 if max_energy < 0.5:
                     continue
 
-                for t_dis in range(T):
+                max_dis = min(T, t_ch + foresight_horizon)
+                for t_dis in range(t_ch, max_dis):
                     if grid_import[t_dis] < 0.5:
                         continue
                     dis_headroom = min(self.ess_power - ess_disch[t_dis],
@@ -366,7 +373,8 @@ class MicrogridOptimizer:
             grid_import[t_dis] = max(0, grid_import[t_dis] - dis_energy)
 
         # 重建SOC曲线
-        soc = 0.5
+        # v6.2: SOC跨天连续 (文件03: SOC范围10-90%)
+        soc = initial_soc if initial_soc is not None else 0.5
         soc_curve = np.zeros(T)
         for t in range(T):
             soc += (ess_ch[t] * eta_one_way - ess_disch[t] / eta_one_way) / self.ess_capacity
@@ -382,75 +390,80 @@ class MicrogridOptimizer:
                 grid_import[t] = trans_limit_kw
                 loss_of_load[t] = excess
 
+        # v6.2: 变压器出口约束 (文件13: 箱变双向功率限制)
+        excess_pv_curtailed = np.zeros(T)
+        for t in range(T):
+            if grid_export[t] > trans_limit_kw:
+                excess_pv_curtailed[t] = grid_export[t] - trans_limit_kw
+                grid_export[t] = trans_limit_kw
+
         return {
             'grid_import': grid_import, 'grid_export': grid_export,
+            'excess_pv_curtailed': excess_pv_curtailed,
             'soc_curve': soc_curve,
             'ess_charge': ess_ch, 'ess_discharge': ess_disch,
             'loss_of_load': loss_of_load,
+            'final_soc': soc,
         }
 
-    def evaluate_config(self, pv_cap, ess_cap, ess_pow):
-        """评估配置 — 季节性TOU + 最优调度 + 年化指标"""
+    def evaluate_config(self, pv_cap, ess_cap, ess_pow, params_override=None):
+        """评估配置 — 365天顺序仿真 + SOC跨天连续 (v6.2)
+
+        替代旧版 typical_days 加权聚合.
+        使用 _build_8760h_sequence() 获取全年逐时序列,
+        每天顺序调度, SOC从前一天继承.
+
+        Parameters
+        ----------
+        params_override : dict or None
+            {'pv_cost_mult': float, 'price_mult': float} 用于敏感度分析
+        """
         self.pv_capacity = pv_cap
         self.ess_capacity = ess_cap
         self.ess_power = ess_pow
 
         annual_grid_import = 0.0
         annual_grid_export = 0.0
-        annual_grid_cost = 0.0       # 网购电成本 (分时计价)
-        annual_grid_export_rev = 0.0 # 上网收入
+        annual_grid_cost = 0.0
+        annual_grid_export_rev = 0.0
         annual_pv_gen = 0.0
         annual_load = 0.0
         annual_self_used = 0.0
         annual_loss_of_load = 0.0
-        annual_ess_cycles = 0.0      # 储能等效循环次数
+        annual_ess_cycles = 0.0
 
-        day_type_list = ['workday', 'weekend', 'holiday', 'spring_festival']
-        day_type_fractions = {dt: DAY_TYPE_ANNUAL[dt] / ANNUAL_DAYS_TOTAL for dt in day_type_list}
+        # 构建8760h序列 (文件10: 天气+日类型+TOU)
+        pv_coeff_seq, load_seq, tou_seq, seasons_seq = self._build_8760h_sequence()
 
-        for td in self.typical_days:
-            season = td['season']
-            weather = td['weather']
-            weight_days = td['days']
+        soc = 0.5  # 年初SOC (文件03: 10-90%范围, 1月1日起始50%)
 
-            pv_coeff = np.array(PV_COEFF[season])
-            weather_factor = WEATHER_COEFF.get(weather, 1.0)
-            tou_hourly = get_tou_price_array(season)
+        for d in range(365):
+            season = seasons_seq[d * 24]
+            pv_profile = pv_coeff_seq[d * 24:(d + 1) * 24] * pv_cap
+            load_profile = load_seq[d * 24:(d + 1) * 24]
+            tou_hourly = tou_seq[d * 24:(d + 1) * 24]
 
-            for dt in day_type_list:
-                dt_fraction = day_type_fractions[dt]
-                dt_weight = weight_days * dt_fraction
+            result = self.simulate_daily_operation(
+                pv_profile, load_profile, season,
+                tou_prices=tou_hourly, initial_soc=soc,
+                foresight_horizon=6)
+            soc = result['final_soc']
 
-                pv_profile = pv_coeff * pv_cap * weather_factor
-                # 负荷含天气修正 (恶劣天气 → 充电↓, 建筑↑)
-                load_profile = self.get_total_load(season, dt, weather)
+            daily_pv_gen = pv_profile.sum()
+            daily_export = result['grid_export'].sum()
+            daily_load = load_profile.sum()
 
-                # 节假日TOU调整 (春节/国庆等节假日电价低于工作日)
-                tou_factor = HOLIDAY_TOU_FACTOR.get(dt, 1.0)
-                tou_hourly_adj = tou_hourly * tou_factor
+            annual_pv_gen += daily_pv_gen
+            annual_load += daily_load
+            annual_grid_import += result['grid_import'].sum()
+            annual_grid_export += daily_export
+            annual_self_used += daily_pv_gen - daily_export
+            annual_loss_of_load += result['loss_of_load'].sum()
+            annual_grid_cost += np.sum(result['grid_import'] * tou_hourly)
+            annual_grid_cost -= daily_export * FEED_IN_PRICE
 
-                result = self.simulate_daily_operation(pv_profile, load_profile, season,
-                                                       tou_prices=tou_hourly_adj)
-                daily_pv_gen = pv_profile.sum()
-                daily_export = result['grid_export'].sum()
-                daily_load = load_profile.sum()
-                daily_self_used = daily_pv_gen - daily_export
-
-                annual_grid_import += result['grid_import'].sum() * dt_weight
-                annual_grid_export += daily_export * dt_weight
-                annual_pv_gen += daily_pv_gen * dt_weight
-                annual_load += daily_load * dt_weight
-                annual_self_used += daily_self_used * dt_weight
-                annual_loss_of_load += result['loss_of_load'].sum() * dt_weight
-
-                # 电网购电成本 = Σ(逐时网购电量 × 调整后分时电价)
-                annual_grid_cost += np.sum(result['grid_import'] * tou_hourly_adj) * dt_weight
-                annual_grid_export_rev += daily_export * FEED_IN_PRICE * dt_weight
-
-                # 储能日循环次数 = 日放电量 / 容量
-                if ess_cap > 0:
-                    daily_cycles = result['ess_discharge'].sum() / ess_cap
-                    annual_ess_cycles += daily_cycles * dt_weight
+            if ess_cap > 0:
+                annual_ess_cycles += result['ess_discharge'].sum() / ess_cap
 
         # 光伏衰减 (年化平均)
         avg_degradation = PV_FIRST_YEAR_DEGRADATION + PV_ANNUAL_DEGRADATION * (PROJECT_LIFE - 1) / 2
@@ -478,8 +491,17 @@ class MicrogridOptimizer:
         carbon_reduction = annual_self_used / 1000 * CARBON_FACTOR_GRID
         annual_carbon_revenue = carbon_reduction * CCER_PRICE
 
+        # 敏感度分析参数覆盖 (v6.2: 避免全局突变)
+        pv_cost_mult = 1.0
+        price_mult = 1.0
+        if params_override:
+            pv_cost_mult = params_override.get('pv_cost_mult', 1.0)
+            price_mult = params_override.get('price_mult', 1.0)
+            annual_grid_cost *= price_mult
+
         # 经济计算
-        capex_detail = self._capex_detail(pv_cap, ess_cap, ess_pow)
+        capex_detail = self._capex_detail(pv_cap, ess_cap, ess_pow,
+                                           cost_mult=pv_cost_mult)
         subsidy_detail = self._calculate_subsidy(pv_cap, ess_cap, ess_pow)
         # 补贴不超总投资30%
         subsidy_applied = min(subsidy_detail['total'],
@@ -616,17 +638,17 @@ class MicrogridOptimizer:
             'total': total_subsidy,
         }
 
-    def _capex_detail(self, pv_cap, ess_cap, ess_pow):
-        """设备级CAPEX明细"""
+    def _capex_detail(self, pv_cap, ess_cap, ess_pow, cost_mult=1.0):
+        """设备级CAPEX明细 (v6.2: 支持cost_mult用于敏感度分析)"""
         detail = {}
 
-        # 光伏系统
-        detail['pv_module'] = pv_cap * PV_COST['module']
-        detail['pv_inverter'] = pv_cap * PV_COST['inverter']
-        detail['pv_combiner'] = pv_cap * PV_COST['combiner_box']
-        detail['pv_structure'] = pv_cap * PV_COST['structure_carport']
-        detail['pv_dc_cable'] = pv_cap * PV_COST['dc_cable']
-        detail['pv_subtotal'] = pv_cap * PV_COST_PER_KWP
+        # 光伏系统 (v6.2: cost_mult用于敏感度分析)
+        detail['pv_module'] = pv_cap * PV_COST['module'] * cost_mult
+        detail['pv_inverter'] = pv_cap * PV_COST['inverter'] * cost_mult
+        detail['pv_combiner'] = pv_cap * PV_COST['combiner_box'] * cost_mult
+        detail['pv_structure'] = pv_cap * PV_COST['structure_carport'] * cost_mult
+        detail['pv_dc_cable'] = pv_cap * PV_COST['dc_cable'] * cost_mult
+        detail['pv_subtotal'] = pv_cap * PV_COST_PER_KWP * cost_mult
 
         # 储能系统
         detail['ess_battery'] = ess_cap * ESS_COST['battery_per_kwh']
@@ -748,8 +770,15 @@ class MicrogridOptimizer:
         npc = capital + npv_om + npv_grid_cost + replacement_cost - salvage - npv_carbon_rev
         return npc
 
-    def optimize_pso(self, pop_size=50, max_iter=30, verbose=True):
-        """PSO优化"""
+    def optimize_pso(self, pop_size=50, max_iter=30, verbose=True,
+                      params_override=None):
+        """PSO优化 (v6.2: 支持params_override避免全局突变)
+
+        Parameters
+        ----------
+        params_override : dict or None
+            参数覆盖, e.g. {'pv_cost_mult': 1.2, 'price_mult': 0.8}
+        """
         bounds = np.array([
             [50, self.area_config['pv_area_m2'] / PV_AREA_RATIO],
             [0, 3000],
@@ -775,7 +804,8 @@ class MicrogridOptimizer:
             if ess_e < 10:
                 ess_e = 0; ess_p = 0
             ess_p = min(ess_p, ess_e * 0.5)
-            result = self.evaluate_config(pv, ess_e, ess_p)
+            result = self.evaluate_config(pv, ess_e, ess_p,
+                                            params_override=params_override)
             npc_val = result['npc']
             ssr = result['self_sufficiency']
             penalty = 0

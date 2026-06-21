@@ -396,16 +396,36 @@ class TopologyAnalyzer:
 
         names = list(capex.keys())
         n = len(names)
-        # 六个维度: efficiency↑, cost↓, reliability↑, maturity↑, scalability↑, om_complexity↓
+        # 六个维度: efficiency, cost, reliability, maturity, scalability, complexity
         scores = np.zeros((n, 6))
+
+        # 文件13: 组件额定效率/可靠性 (来源: 设备参数数据)
+        # 串联可靠性模型: R_total = prod(R_component ^ count)
+        comp_reliability = {
+            'pv_inverter': 0.999, 'transformer': 0.998, 'pcs': 0.997,
+            'dc_dc': 0.998, 'ac_dc': 0.997, 'dc_ac': 0.997,
+        }
+        # 主要串联组件数量 (各拓扑特有)
+        comp_counts = {
+            'AC': {'pv_inverter': 1, 'transformer': 1, 'pcs': 0, 'dc_dc': 0, 'ac_dc': 0, 'dc_ac': 0},
+            'DC': {'pv_inverter': 0, 'transformer': 1, 'pcs': 0, 'dc_dc': 2, 'ac_dc': 1, 'dc_ac': 1},
+            'Hybrid': {'pv_inverter': 1, 'transformer': 1, 'pcs': 1, 'dc_dc': 1, 'ac_dc': 1, 'dc_ac': 0},
+            'Ring': {'pv_inverter': 1, 'transformer': 1, 'pcs': 0, 'dc_dc': 0, 'ac_dc': 0, 'dc_ac': 0},
+        }
 
         for i, name in enumerate(names):
             eff_avg = np.mean(list(eff_matrix[name].values()))
             scores[i, 0] = eff_avg * 100  # 效率百分比
             scores[i, 1] = capex[name]['total_wan']  # 万元
-            scores[i, 2] = [99.5, 98.5, 99.0, 98.0][i]  # 可靠性 %
-            scores[i, 3] = [5, 3, 2, 2][i]  # 成熟度 1-5
-            scores[i, 4] = [3, 4, 5, 5][i]  # 可扩展性 1-5
+            # 串联组件可靠性 (v6.2: 动态计算替代硬编码)
+            cnt = comp_counts.get(name, comp_counts['AC'])
+            reliability = 1.0
+            for comp, count in cnt.items():
+                if count > 0:
+                    reliability *= comp_reliability[comp] ** count
+            scores[i, 2] = reliability * 100  # 可靠性 %
+            scores[i, 3] = {'AC': 5, 'DC': 3, 'Hybrid': 2, 'Ring': 2}.get(name, 3)  # 成熟度
+            scores[i, 4] = {'AC': 3, 'DC': 4, 'Hybrid': 5, 'Ring': 5}.get(name, 3)  # 可扩展性
             scores[i, 5] = capex[name]['control_complexity']  # 复杂度
 
         return names, scores

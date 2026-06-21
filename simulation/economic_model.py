@@ -26,6 +26,9 @@ from config import (
     CHARGING_SUBSIDY_PER_PILE, MAX_SUBSIDY_RATIO,
     SCENARIOS, CARBON_FACTOR_GRID, FEED_IN_PRICE,
     SERVICE_AREA_CONFIG,
+    # v6.2: 分项残值率 + 上网电价涨幅
+    RESIDUAL_RATE_PV, RESIDUAL_RATE_ESS, RESIDUAL_RATE_CHARGING,
+    FEED_IN_PRICE_ESCALATION,
 )
 
 
@@ -202,9 +205,10 @@ class EconomicModel:
             price_esc = self.sc_params['grid_price_escalation']
             grid_cost = float(np.sum(annual_grid_import_kwh * annual_tou_prices)) * \
                         (1 + price_esc) ** (y - 1)
-            # 上网收入
+            # 上网收入 (v6.2: FEED_IN_PRICE_ESCALATION)
             grid_rev = annual_grid_export_kwh * FEED_IN_PRICE * \
-                       (1 + price_esc) ** (y - 1)
+                       (1 + price_esc) ** (y - 1) * \
+                       (1 + FEED_IN_PRICE_ESCALATION) ** (y - 1)
             # 碳收入
             pv_eff = self._pv_degradation_factor(y)
             self_use = annual_self_consumed_kwh * pv_eff
@@ -473,7 +477,11 @@ class EconomicModel:
             for year, cost, _ in self.replacement_schedule():
                 replacement_cost += cost / (1 + dr) ** year
 
-        salvage = capital * RESIDUAL_RATE / (1 + dr) ** PROJECT_LIFE
+        # v6.2: 分项残值率 (文件13: PV 10%/ESS 5%/Charging 5%)
+        salvage_pv = (capex_detail['pv_subtotal'] if capex_detail else self.capex_pv()) * RESIDUAL_RATE_PV
+        salvage_ess = (capex_detail['ess_subtotal'] if capex_detail else self.capex_ess()) * RESIDUAL_RATE_ESS
+        salvage_charging = (capex_detail.get('charging_subtotal', 0) if capex_detail else self.capex_charging()) * RESIDUAL_RATE_CHARGING
+        salvage = (salvage_pv + salvage_ess + salvage_charging) / (1 + dr) ** PROJECT_LIFE
 
         return capital + npv_om + npv_grid_cost + replacement_cost - salvage - npv_carbon_rev
 

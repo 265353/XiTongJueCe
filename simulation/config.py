@@ -484,5 +484,42 @@ def print_cost_breakdown():
     for k, v in FIXED_COST.items():
         print(f"  {k}: {v/1e4:.1f}万")
 
+# ============================================================
+# v6.2 新增: SOC依赖的RTE + 经济参数数据补齐
+# ============================================================
+
+def get_rte(soc, c_rate=0.25):
+    """SOC和C-rate依赖的LFP电池充放电效率 (文件03/13)
+
+    文件03: LFP RTE 90-94%, 标准0.5C倍率
+    中SOC段效率最高, SOC极值段扩散限制导致效率下降.
+    C-rate越高, 欧姆损耗越大.
+
+    Parameters
+    ----------
+    soc : float (0-1)
+    c_rate : float (充电/放电倍率 = 功率/容量)
+
+    Returns
+    -------
+    float : 往返效率 (0-1)
+    """
+    # SOC修正: 偏离SOC=0.5越多, 效率越低
+    soc_dev = abs(soc - 0.5) / 0.4
+    soc_factor = 1.0 - 0.04 * min(soc_dev, 1.0)
+    # C-rate修正: 高倍率时效率降低
+    c_factor = 1.0 - 0.02 * min(c_rate / 0.5, 2.0)
+    return 0.93 * soc_factor * c_factor
+
+
+# 文件01: 上网电价年涨幅 (保守假设, 基于历年分布式光伏政策趋势)
+FEED_IN_PRICE_ESCALATION = 0.01
+
+# 文件13 §4: 分项残值率 (替代统一RESIDUAL_RATE=0.05)
+RESIDUAL_RATE_PV = 0.10        # 光伏 10% (25年)
+RESIDUAL_RATE_ESS = 0.05       # 储能 5% (15年)
+RESIDUAL_RATE_CHARGING = 0.05  # 充电桩 5% (10年)
+
+
 if __name__ == '__main__':
     print_cost_breakdown()

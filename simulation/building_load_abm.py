@@ -177,6 +177,7 @@ class BuildingLoadABM:
 
         # 基础负荷 (不可调度, 独立于人员: 路灯/弱电/冷柜等)
         self.base_load_kw = self.peak_building_kw * 0.15  # 基础负荷占峰值15%
+        self._cal_factor = None  # 延迟校准 (v6.2: 对标文件12设计峰值)
 
     def simulate_hour(self, hour, month, day_type='workday', weather='clear'):
         """模拟单小时建筑负荷
@@ -231,14 +232,64 @@ class BuildingLoadABM:
 
         total_kw = base + agent_load_kw
 
+        # v6.2: 校准到设计峰值 (文件12: 中型147kW)
+        if self._cal_factor is None:
+            self._calibrate()
+        total_kw *= self._cal_factor
+
         breakdown = {
-            'base': base,
-            'agent': agent_load_kw,
+            'base': base * self._cal_factor,
+            'agent': agent_load_kw * self._cal_factor,
             'total': total_kw,
             'n_present': n_present,
         }
 
         return total_kw, breakdown
+
+    def _calibrate(self):
+        """校准ABM输出到设计峰值 (v6.2: 文件12 中型147kW)
+
+        模拟夏季工作日12:00 (典型峰值时段), 计算缩放因子。
+        """
+        raw_kw, _ = self._simulate_hour_raw(12, 7, 'workday', 'clear')
+        self._cal_factor = self.peak_building_kw / max(raw_kw, 0.1)
+        self._cal_factor = np.clip(self._cal_factor, 0.5, 2.0)
+
+    def _simulate_hour_raw(self, hour, month, day_type='workday', weather='clear'):
+        """无校准版本 — 供_calibrate内部使用"""
+        from config import WEATHER_BUILDING_COEFF
+        wc = WEATHER_BUILDING_COEFF.get(weather, 1.0)
+        n_staff = 37 if self.area_size == 'medium' else (25 if self.area_size == 'small' else 50)
+        n_guests = 14 if self.area_size == 'medium' else (8 if self.area_size == 'small' else 22)
+        n_drivers = 80 if self.area_size == 'medium' else (40 if self.area_size == 'small' else 120)
+
+        total_device_loads = {}
+        n_present = 0
+        for _ in range(n_staff):
+            agent = OccupantAgent('staff', self.rng)
+            _, loads = agent.get_hour_state(hour, day_type, weather)
+            if loads:
+                n_present += 1
+                for dev, power in loads.items():
+                    total_device_loads[dev] = total_device_loads.get(dev, 0) + power
+        for _ in range(n_guests):
+            agent = OccupantAgent('guest', self.rng)
+            _, loads = agent.get_hour_state(hour, day_type, weather)
+            if loads:
+                n_present += 1
+                for dev, power in loads.items():
+                    total_device_loads[dev] = total_device_loads.get(dev, 0) + power
+        for _ in range(n_drivers):
+            agent = OccupantAgent('driver', self.rng)
+            _, loads = agent.get_hour_state(hour, day_type, weather)
+            if loads:
+                n_present += 1
+                for dev, power in loads.items():
+                    total_device_loads[dev] = total_device_loads.get(dev, 0) + power
+
+        agent_kw = sum(total_device_loads.values()) / 1000 * wc
+        base = self.base_load_kw * wc
+        return base + agent_kw, {'base': base, 'agent': agent_kw, 'n_present': n_present}
 
     def simulate_day(self, month, day_type='workday', weather='clear'):
         """模拟一天24h建筑负荷"""

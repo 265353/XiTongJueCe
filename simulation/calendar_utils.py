@@ -102,12 +102,25 @@ def print_calendar_summary(day_types):
     print(f"  总计: {sum(counts.values())} 天")
 
 
+def _compute_persistence(wdays, weather_type, n_days_total):
+    """基于月度天气天数反推类型特定持续性 (文件10 月度统计)
+
+    原理: 天气类型出现天数越多, 说明该月该类型越"稳定"。
+    P(stay|w) ∝ N_w / M, 下限0.35确保所有类型都有最小持续性。
+    """
+    n_w = wdays.get(weather_type, 0)
+    if n_w <= 1:
+        return 0.35
+    # 持续性 = N_w占全月比例, 限定在 [0.35, 0.85]
+    return np.clip(n_w / n_days_total * 1.3, 0.35, 0.85)
+
+
 def generate_weather_markov(rng, month, days_in_month_list, persistence=None):
     """
-    使用一阶Markov链生成单月天气序列.
+    使用一阶Markov链生成单月天气序列 (v6.2: 类型特定持续性).
 
-    转移概率: P(w'|w) = persistence * δ(w',w) + (1-persistence) * P_target(w')
-    这保证了天气的时间持续性, 同时长期频率趋近于月度目标分布.
+    转移概率: P(w'|w) = persist(w) * δ(w',w) + (1-persist(w)) * P_target(w')
+    每种天气类型有独立的持续性系数, 从月度分布反推 (文件10).
 
     Parameters
     ----------
@@ -116,15 +129,12 @@ def generate_weather_markov(rng, month, days_in_month_list, persistence=None):
     days_in_month_list : list[int]
         每月天数列表
     persistence : float or None
-        持续性参数, None则使用默认值
+        若为float则覆盖所有类型的持续性值; None则使用类型特定值
 
     Returns
     -------
     weather_seq : list[str] 该月每天天气类型
     """
-    if persistence is None:
-        persistence = WEATHER_PERSISTENCE
-
     wdays = MONTHLY_WEATHER_DAYS[month]
     weather_types = list(wdays.keys())
     n_days = days_in_month_list[month - 1]
@@ -133,19 +143,28 @@ def generate_weather_markov(rng, month, days_in_month_list, persistence=None):
     total = sum(wdays.values())
     target_probs = np.array([wdays[t] / total for t in weather_types])
 
+    # 类型特定持续性 (除非传入全局persistence覆盖)
+    if persistence is not None:
+        persist_values = {t: persistence for t in weather_types}
+    else:
+        persist_values = {t: _compute_persistence(wdays, t, n_days)
+                         for t in weather_types}
+
     seq = []
     # 第一天从目标分布抽样
     prev_idx = rng.choice(len(weather_types), p=target_probs)
-    seq.append(weather_types[prev_idx])
+    prev_type = weather_types[prev_idx]
+    seq.append(prev_type)
 
     for _ in range(1, n_days):
-        if rng.random() < persistence:
-            curr_idx = prev_idx  # 保持相同天气
+        p_stay = persist_values[prev_type]
+        if rng.random() < p_stay:
+            curr_idx = weather_types.index(prev_type)
         else:
-            # 按目标分布切换
+            # 按目标分布切换 (排除当前类型)
             curr_idx = rng.choice(len(weather_types), p=target_probs)
-        seq.append(weather_types[curr_idx])
-        prev_idx = curr_idx
+        prev_type = weather_types[curr_idx]
+        seq.append(prev_type)
 
     return seq
 
