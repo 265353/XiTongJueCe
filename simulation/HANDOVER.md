@@ -4,6 +4,54 @@
 
 ---
 
+## [2026-06-21] v6.2 数据驱动仿真真实性增强
+
+**Branch**: master | **Changed by**: 265353 | **Mode**: full (9 files, +494/-252)
+
+### What Changed
+
+| File | Category | Description |
+|------|----------|-------------|
+| `mc_charging_load.py` | Feature | GMM双峰到达(N(11,1.5²)45%+N(15,1.8²)55%), 时长上限480kW→1h/120kW→2h, 季节能耗调整 |
+| `calendar_utils.py` | Feature | 类型特定天气持续性(P(stay)从月度分布反推), 替代全局persistence=0.65 |
+| `capacity_optimization.py` | Refactor | **核心**: 365天顺序仿真+SOC跨天连续+有限预见(horizon=6). evaluate_config重写. 变压器双向约束. params_override支持 |
+| `config.py` | Feature | get_rte(soc,c_rate), FEED_IN_PRICE_ESCALATION, 分项残值率(PV10%/ESS5%/Charging5%) |
+| `economic_model.py` | Feature | 上网电价年涨幅应用, npc_from_aggregates分项残值计算 |
+| `topology_comparison.py` | Feature | 串联组件可靠度模型替代硬编码可靠性评分 |
+| `building_load_abm.py` | Feature | ABM峰值自动校准到设计峰值147kW (文件12) |
+| `main.py` | Refactor | 敏感度分析: params_override替代全局config突变 |
+
+### Why
+
+前期审计发现15个严重理想化问题。v6.2基于14份研究数据集中的真实数据(文件01/02/03/05/10/11/12/13), 逐项修复充电到达模型、天气持续性、储能跨天调度、变压器约束、经济参数等17项假设。所有修复均引用数据集原文出处。
+
+### Conflict Analysis
+
+| Severity | Type | Detail |
+|----------|------|--------|
+| NONE | Signature | `simulate_daily_operation`/`evaluate_config`/`optimize_pso` 新增参数均有默认值, 5个调用方兼容 |
+| NONE | Import | 所有新增import路径存在, 无循环依赖 |
+| NONE | Config | `params_override` 局部传递, 不再修改全局 `config.PV_COST` |
+| LOW | Performance | `evaluate_config` 365天顺序仿真(+52%调用), 通过减少贪婪迭代(80→40)和早期终止补偿 |
+
+### Design Decision Impact
+
+- `capacity_optimization.evaluate_config`: 从 typical_days 加权聚合改为 365天顺序仿真 — 与 `verify_8760h` 逻辑统一, 消除目标不一致
+- `capacity_optimization._calculate_npc_detailed`: 保留+废弃标注 — v6模式使用 `EconomicModel.npc_from_aggregates`
+- `mc_charging_load.simulate_day`: 从每小时Poisson改为天总量Poisson+GMM时刻采样 — 保持 `simulate_monte_carlo` 接口不变
+- 全局config突变: **禁止** — 敏感度分析必须用 `params_override` 局部传递
+
+### Caller Impact
+
+`simulate_daily_operation(pv, load, season, tou, initial_soc, foresight_horizon)` — 5 callers:
+- `evaluate_config` (新版, 传入 horizon=6)
+- `verify_8760h` (新版, 传入 horizon=24 + SOC链)
+- `microgrid_frontend.py:63` (旧版, 不传新参数, 默认兼容)
+- `main.py:368` (fig3典型日, 不传新参数, 默认兼容)
+- `interactive_dashboard.py:72` (仪表盘, 不传新参数, 默认兼容)
+
+---
+
 ## 项目概述
 
 基于14份研究数据集构建的完整仿真链：**光伏资源评估 → 蒙特卡洛充电负荷预测 → 建筑负荷ABM → 微网拓扑架构对比 → PSO/NSGA-II/GA/EGPSO容量优化 → AHP-TOPSIS/VIKOR/GRA方案决策遴选 → 经济性全生命周期评估**。
@@ -234,195 +282,17 @@ python microgrid_frontend.py && open figures/microgrid_frontend.html
 | 动态回收期 | ~9 年 | 考虑折现+更换事件 |
 | 三情景NPC | 保守1,403万 / 基准1,422万 / 激进1,444万 | — |
 
----
+## 版本历史摘要
 
-## v6 变更概要 (2026-06-16)
-
-### 新增模块 (6个) — 对标6大研究任务缺失部分
-
-| 文件 | 行数 | 功能 | 理论来源 | 对标任务 |
-|------|:--:|------|---------|:--:|
-| `economic_model.py` | 446 | NPC/LCOE/IRR/PBP/ROI/BCR全生命周期经济评估 | 文件08§3 + 文件13 | 通用 |
-| `pv_resource_analysis.py` | 400 | 四类资源区+25省辐射量+服务区光伏测算 | 文件04 + 文件10 | Task1 |
-| `building_load_abm.py` | 310 | Agent-Based建筑负荷(37员工+14旅客+80司机) | 文件06§4 + 文件12 | Task3 |
-| `topology_comparison.py` | 380 | AC/DC/Hybrid/Ring四拓扑效率/投资/成熟度对比 | 文件07§2 | Task4 |
-| `optimization_comparison.py` | 420 | GA+EGPSO+两阶段鲁棒优化框架+算法基准测试 | 文件08§1-2 | Task5 |
-| `advanced_decision_methods.py` | 410 | VIKOR折中排序+灰色关联度+Borda共识投票 | 文件09§2 | Task6 |
-
-### 关键修复
-
-| 文件 | 问题 | 修复 |
-|------|------|------|
-| `economic_model.py:144` | 逆变器更换成本硬编码 `150` | 改用 `config.PV_COST['inverter']` |
-| `topology_comparison.py` | DC/Hybrid拓扑效率加权公式错误 (55-68%) | 重写为统一路径效率矩阵法 (93-97%) |
-| `pv_resource_analysis.py` | Unicode ²/₂ 字符Windows GBK报错 | 替换为ASCII |
-| `advanced_decision_methods.py` | Unicode ✓/△/✗ 编码错误 | 替换为ASCII |
-
-### 交叉验证结果
-
-| 测试项 | 结果 |
-|--------|:--:|
-| 全部16模块导入 | PASS |
-| 6个新模块自测 | PASS |
-| 跨模块集成测试 (5项) | PASS |
-| 现有代码回溯兼容 | PASS (无修改) |
-| VIKOR/GRA/TOPSIS三方法一致性 | PASS (一致推荐光储均衡方案) |
-
-### 完成度变化
-
-| 维度 | v5 | v6 |
-|------|:--:|:--:|
-| 代码实现 | 75% | **92%** |
-| 方法论覆盖 | 70% | **90%** |
-| 6大研究任务覆盖 | 4/6 | **6/6** |
-
-### 待完成
-
-| 项目 | 说明 |
-|------|------|
-| 两阶段鲁棒优化全链集成 | `optimization_comparison.py` 框架已有, 需在 main.py 中接入实际仿真数据 |
-| ABM模型参数标定 | 人员行为概率基于典型值, 未对特定服务区实地标定 |
-| V2G双向充放电 | 未建模 |
-| 排队模型终端区分 | 未区分120kW/480kW终端 |
-| 需求侧响应收益 | 未包含 |
-
----
-
-## v6.2 仿真真实性增强 (2026-06-21)
-
-### 数据驱动改进 (基于14份研究数据集)
-
-| 类别 | 文件 | 修复 | 数据来源 |
-|------|------|------|---------|
-| 充电到达 | `mc_charging_load.py` | GMM双峰: N(11,1.5²)45%+N(15,1.8²)55% | 文件05 §2 |
-| 充电时长 | `mc_charging_load.py` | 480kW: 3h→1h, 120kW: 3h→2h | 文件02 §1 |
-| 季节能耗 | `mc_charging_load.py` | 冬+15%/夏+8% 能耗调整 | 文件05 §4 |
-| 天气持续 | `calendar_utils.py` | 类型特定P(stay), 替代全局0.65 | 文件10 §3 |
-| SOC连续 | `capacity_optimization.py` | 365天顺序仿真, SOC跨天继承 | 文件03 |
-| 有限预见 | `capacity_optimization.py` | PSO horizon=6h, verify=24h | 文件01 |
-| 变压器 | `capacity_optimization.py` | 进出口双向功率约束 | 文件13 |
-| 拓扑评分 | `topology_comparison.py` | 串联组件可靠度替代硬编码 | 文件13 |
-| ABM校准 | `building_load_abm.py` | 自动对标设计峰值147kW | 文件12/06 |
-| RTE函数 | `config.py` | get_rte(soc, c_rate) SOC依赖 | 文件03/13 |
-| 上网电价 | `config.py`/`economic_model.py` | 年涨幅1% | 文件01 |
-| 残值率 | `config.py`/`economic_model.py` | 分项: PV 10%/ESS 5%/Charging 5% | 文件13 §4 |
-| 敏感度 | `main.py` | params_override替代全局config突变 | — |
-
-### 架构改进
-
-```
-旧: evaluate_config → typical_days加权 (SOC每日重置0.5, 完美24h预见)
-新: evaluate_config → 365天顺序仿真 (SOC跨天继承, horizon=6h有限预见)
-
-旧: Markov天气 → 全局persistence=0.65
-新: Markov天气 → 类型特定persistence (从月度天数反推)
-
-旧: simulate_day → 每小时独立Poisson到达
-新: simulate_day → GMM双峰到达时刻采样
-```
-
-### 指标对比
-
-| 指标 | v6.1 | v6.2 | 原因 |
-|------|------|------|------|
-| SSR (PV=1231,ESS=2000) | 26.4% | 24.5% | SOC连续性限制储能可用率 |
-| NPC | 7,284万 | 9,949万 | 有限预见使调度保守 |
-| Payback | 7.4yr | 18.0yr | 经济模型更真实 |
-| 天气持续性 | 全局0.65 | 类型0.35-0.85 | 基于月度数据反推 |
-
----
-## v6.1 集成变更概要 (2026-06-21)
-
-### 核心改动
-
-| 文件 | 变更 | 说明 |
-|------|------|------|
-| `main.py` | 新增 `--mode v6` 全流程 | 串联全部16模块, 12步管道 |
-| `capacity_optimization.py` | 集成EconomicModel + ABM | `use_econ_model`/`use_abm` 参数, 旧方法保留+废弃标注 |
-| `economic_model.py` | 新增 `npc_from_aggregates()` | 热路径桥接方法, 2000次/PSO运行可用 |
-| `interactive_dashboard.py` | `build_8760h_data()` 参数化 | 接受已有opt实例, 避免重复创建 |
-| `visualization.py` | 新增 fig11/12/13 | 拓扑雷达图/经济瀑布图/决策一致性图 |
-| `HANDOVER.md` | 文档修正 | 更新完成度, 移除过时WIP条目 |
-
-### v6 全流程 (--mode v6)
-
-```
-MC→PV→PV资源区→PSO(ABM+EconModel)→NSGA-II→算法对比(GA/EGPSO)
-→Pareto→敏感性→四方案→TOPSIS→VIKOR/GRA/Borda→拓扑对比
-→经济全生命周期→仪表盘→图表(fig1-fig13)
-```
-
----
-## v5 变更概要 (2026-06-16)
-
-### 新增模块 (2个)
-
-| 文件 | 行数 | 功能 | 理论来源 |
-|------|:--:|------|---------|
-| `decision_framework.py` | 553 | AHP-熵权-CRITIC-TOPSIS决策框架 | 文件09 |
-| `nsga2.py` | 317 | NSGA-II多目标优化 | 文件08 |
-
-### 增强模块 (5个)
-
-| 文件 | 变更 | 数据来源 |
-|------|------|---------|
-| `config.py` | +~120行: 温度模型/碳交易/补贴/情景参数 | microgrid_architecture.md, 文件01/06/13 |
-| `pv_generation.py` | Sandia热模型温度修正 | microgrid_architecture.md §2.1 |
-| `capacity_optimization.py` | 碳交易收益+补贴+负荷增长+多情景评估 | 文件01/06/09/13 |
-| `visualization.py` | Fig8 TOPSIS结果 / Fig9 多情景对比 / Fig10 3D Pareto | — |
-| `main.py` | 集成新模块, `--mode` CLI参数 | — |
-
-### Bug修复 (1个)
-
-| 文件 | 问题 | 修复 |
-|------|------|------|
-| `main.py:run_sensitivity()` | TOU_PRICE_VALUES在v4已改为嵌套季节结构, 敏感性分析直接用dict×float报错 | 深拷贝+逐层修改嵌套dict |
-
----
-
-## v4 变更概要 (2026-06-11)
-
-### 致命修复: 调度策略重构
-
-| 问题 | 修复 |
-|------|------|
-| 贪心调度仅PV余电充ESS, ESS几乎不工作 | 重写为24h迭代套利算法: 谷电/弃光→充电, 峰电→放电 |
-| 网购电成本用均价(0.80), 忽略分时结构 | 改用 Σ(逐时网购×该时刻TOU价格) |
-| 电价全年固定 | 改为季节性TOU: 夏季尖峰1.35/冬季1.25/春秋1.15 |
-
-**效果**: 日网购成本降低约29%, ESS从几乎不工作变为日均3.6次循环。
-
-### 模型真实化
-
-| # | 修复 | 来源 |
-|---|------|------|
-| 2 | 电池循环衰减(2%/8000次)+日历衰减(2%/年) | 文件13 |
-| 3 | 变压器容量约束 ≤2500kVA×0.95 | config.py |
-| 4 | M/M/n排队模型 (26终端, 含弃充) | 文件11 |
-| 5 | 8760h全时序验证 (偏差<2pp) | — |
-| 6 | SVG三场景校核 (最恶劣=50kVAR) | 架构文档 |
-
----
-
-## v3 变更概要 (2026-06-11 较早)
-
-### 致命Bug
-
-| # | 问题 | 修复 |
-|---|------|------|
-| 1 | 小时边界bug导致~50%充电负荷丢失 | 区间重叠算法 |
-| 2 | 全年365天硬编码workday | 4种日类型加权年化 |
-
-### 严重问题
-
-| # | 问题 | 修复 |
-|---|------|------|
-| 3 | SOC Gamma参数偏大 | Gamma(2.8, 0.075) |
-| 4 | 天气类型从5类简化为4类 | 恢复5类(含晴转多云0.80) |
-| 5 | 单一Gamma描述所有车型 | 7种车型独立分布 |
-| 6 | GMM参数使用旧值 | 改用文件11精确值 |
-| 7 | 无光伏衰减 | 首年2%+逐年0.5% |
-| 8 | 碳因子0.581 | 0.5703(生态环境部2024) |
+| 版本 | 日期 | 关键变更 | 详档 |
+|------|------|---------|------|
+| v6.2 | 2026-06-21 | 数据驱动仿真真实性: GMM到达+SOC连续+有限预见+类型特定天气+变压器双向+分项残值 | 见上 |
+| v6.1 | 2026-06-21 | 全模块集成: --mode v6 + EconomicModel桥接 + ABM衔接 | 见上 |
+| v6 | 2026-06-16 | 6新模块: economic/pv_resource/building_abm/topology/optimization/advanced_decision | 见上 |
+| v5 | 2026-06-16 | NSGA-II + AHP-TOPSIS决策 + 碳交易/补贴/温度增强 | [→ARCHIVE](HANDOVER_ARCHIVE.md) |
+| v4 | 2026-06-11 | 调度重构(24h套利) + 变压器约束 + 8760h验证 + M/M/n排队 | [→ARCHIVE](HANDOVER_ARCHIVE.md) |
+| v3 | 2026-06-11 | 7车型独立分布 + GMM精确值 + 光伏衰减 + 碳因子修正 | [→ARCHIVE](HANDOVER_ARCHIVE.md) |
+| v1 | 2026-06-10 | 初始提交: 光储充一体化仿真框架 | — |
 
 ---
 
