@@ -87,6 +87,10 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
 ::-webkit-scrollbar-thumb { background:#1a3a5a; border-radius:3px; }
 /* Responsive */
 @media(max-width:1200px) { .row2,.row2-1,.row3 { grid-template-columns:1fr; } }
+/* SCADA Pro Viz Tabs */
+.sp-viz-tab { background:rgba(15,31,56,0.8); color:#5a8aaa; border:1px solid var(--border); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:10px; transition:all 0.2s; white-space:nowrap; }
+.sp-viz-tab:hover { background:rgba(0,200,240,0.1); color:var(--bright); }
+.sp-viz-tab.active { background:rgba(0,200,240,0.15); color:var(--accent); border-color:var(--accent); }
 </style>
 </head>
 <body>
@@ -1506,6 +1510,37 @@ let scadaProWeather = 'auto';
 let scadaProNDays = 1;
 let scadaProMinute = 720;  // current minute of day (720 = 12:00)
 let scadaProTimer = null, scadaProPlaying = false;
+let spActiveViz = 'sld';  // current viz tab: sld/pv/ess/building/charging
+
+function switchSPViz(viz) {
+  spActiveViz = viz;
+  document.querySelectorAll('.sp-viz-tab').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`.sp-viz-tab[data-viz="${viz}"]`);
+  if (btn) btn.classList.add('active');
+  if (scadaProData) drawSPMainCanvas();
+}
+
+function drawSPMainCanvas() {
+  const canvas = document.getElementById('spMainCanvas');
+  if (!canvas || !scadaProData) return;
+  const cfg = scadaProData.config;
+  const totalMins = cfg.n_days * 1440;
+  const mIdx = Math.min(Math.floor(scadaProMinute / cfg.sample_interval_min), scadaProData.sampled_minutes.length - 1);
+  const snap = scadaProData.sampled_minutes[mIdx];
+  if (!snap) return;
+  const pileCfg = scadaProData.pile_config || [];
+  const pileSnaps = scadaProData.pile_timeline || [];
+  const pileIdx = Math.min(Math.floor(scadaProMinute / 15), pileSnaps.length - 1);
+  const pileSnap = pileSnaps[pileIdx];
+
+  switch (spActiveViz) {
+    case 'sld': drawSP_SLD_Canvas(canvas, snap, scadaProData); break;
+    case 'pv': drawSP_PVArray(canvas, snap, scadaProData); break;
+    case 'ess': drawSP_ESSCabinets(canvas, snap, scadaProData); break;
+    case 'building': drawSP_BuildingFloor(canvas, snap, scadaProData); break;
+    case 'charging': drawSP_ChargingCanvasV2(canvas, snap, scadaProData, pileSnap); break;
+  }
+}
 
 async function renderSCADA() {
   const c = document.getElementById('content');
@@ -1539,14 +1574,18 @@ async function renderSCADA() {
         <span style="font-size:9px;color:var(--accent2);margin-left:4px;" id="spInfo"></span>
       </div>
     </div>
-    <!-- Row 1: 2:1 SLD+Charging | SOC+Weather -->
+    <!-- Row 1: 2:1 Tabbed Viz Panel | SOC+Weather -->
     <div class="row2-1" style="margin-bottom:12px;">
       <div class="chart-box" style="min-height:500px;">
-        <h3>微网单线图 + 充电站实景</h3>
-        <div style="display:flex;height:440px;gap:8px;">
-          <div id="spSLD" style="flex:1;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;min-width:200px;"></div>
-          <canvas id="spChargingCanvas" style="flex:1.2;border-radius:6px;min-width:250px;"></canvas>
-        </div>
+        <h3 style="display:flex;align-items:center;gap:4px;flex-wrap:wrap;">
+          <span style="font-size:12px;color:var(--accent);margin-right:6px;">细粒度可视化</span>
+          <button class="sp-viz-tab active" data-viz="sld" onclick="switchSPViz('sld')">⚡ 单线图</button>
+          <button class="sp-viz-tab" data-viz="pv" onclick="switchSPViz('pv')">☀️ 光伏阵列</button>
+          <button class="sp-viz-tab" data-viz="ess" onclick="switchSPViz('ess')">🔋 储能系统</button>
+          <button class="sp-viz-tab" data-viz="building" onclick="switchSPViz('building')">🏠 建筑平面</button>
+          <button class="sp-viz-tab" data-viz="charging" onclick="switchSPViz('charging')">🚗 充电站</button>
+        </h3>
+        <canvas id="spMainCanvas" style="width:100%;height:440px;border-radius:6px;"></canvas>
       </div>
       <div>
         <div class="chart-box"><h3>SOC + 电网功率</h3><div class="chart-inner" id="spSOCChart"></div></div>
@@ -1568,7 +1607,6 @@ async function renderSCADA() {
       <div style="overflow-x:auto;"><table class="data-table" id="spDailyTable"></table></div>
     </div>
   `;
-  document.getElementById('spSLD').innerHTML = '<div class="loading">加载细粒度仿真数据...</div>';
   setTimeout(() => loadSCADAProData(), 200);
 }
 
@@ -1632,9 +1670,9 @@ function updateSCADAPro(minuteOfDay) {
     spCard((snap.ev_active).toFixed(0)+' 辆', '排队:'+snap.ev_waiting.toFixed(0)+' 总桩:'+cfg.total_piles, '🚗 充电桩占', '#f06878', '🚗') +
     spCard(pvUtil.toFixed(1)+'%', net>0?'余电':'缺电', '📈 消纳率', pvUtil>80?'#60d040':pvUtil>50?'#f0a020':'#e04050', '📊');
 
-  // Draw all visualizations
-  drawSP_SLD(snap, ds);
-  drawSP_ChargingCanvas(snap, data);
+  // Draw main viz canvas
+  drawSPMainCanvas();
+  // Draw all charts
   drawSP_SOCChart();
   drawSP_WeatherChart();
   drawSP_PowerFlowChart();
@@ -1644,186 +1682,473 @@ function updateSCADAPro(minuteOfDay) {
   buildSPDailyTable();
 }
 
-// ---------- SLD SVG ----------
-function drawSP_SLD(snap, ds) {
-  const el = document.getElementById('spSLD');
-  if (!el) return;
-  const w = el.clientWidth || 400, h = el.clientHeight || 440;
-  const socPct = snap.soc * 100;
-  const pvAlpha = snap.pv_kw > 5 ? 1 : 0.3;
-  const isDay = snap.ghi > 50;
-  const gridImp = snap.grid_import_kw > 2;
-  const gridExp = snap.grid_export_kw > 2;
-  const essCh = snap.ess_charge_kw > 2;
-  const essDisch = snap.ess_discharge_kw > 2;
+// ===== 5-in-1 Canvas Visualizations =====
 
-  el.innerHTML = `
-    <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background:${isDay?'#0a1628':'#050d18'};">
-      <defs>
-        <filter id="g2"><feGaussianBlur stdDeviation="1.5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-        <linearGradient id="socGrad" x1="0" y1="0" x2="1" y2="0">
-          <stop offset="0%" stop-color="#e04050"/><stop offset="50%" stop-color="#f0a020"/><stop offset="100%" stop-color="#60d040"/>
-        </linearGradient>
-      </defs>
-      <!-- Grid -->
-      <rect x="${w/2-80}" y="8" width="160" height="20" rx="5" fill="#142840" stroke="#3080b0" stroke-width="1.2"/>
-      <text x="${w/2}" y="21" text-anchor="middle" fill="#d8ecf8" font-size="10" font-weight="600">大电网 10kV</text>
-      <!-- Transformer -->
-      <rect x="${w/2-60}" y="34" width="120" height="24" rx="4" fill="#0f2038" stroke="#4080b0" stroke-width="1.2"/>
-      <text x="${w/2}" y="47" text-anchor="middle" fill="#c0ddf0" font-size="9" font-weight="600">箱变 2×1250kVA</text>
-      <text x="${w/2}" y="55" text-anchor="middle" fill="#6090b0" font-size="6">Dyn11 10/0.4kV</text>
-      <!-- Busbar -->
-      <rect x="8" y="64" width="${w-16}" height="12" rx="3" fill="#b0b0b0" stroke="#808080" stroke-width="1"/>
-      <text x="${w/2}" y="73" text-anchor="middle" fill="#0a1628" font-size="9" font-weight="700">400V AC母线</text>
-      <!-- PV -->
-      <rect x="10" y="90" width="${w/4-15}" height="100" rx="5" fill="#0c1808" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
-      <text x="${10+(w/4-15)/2}" y="115" text-anchor="middle" fill="#f0b840" font-size="10" font-weight="600">☀ 光伏</text>
-      <text x="${10+(w/4-15)/2}" y="130" text-anchor="middle" fill="#80a060" font-size="9">${snap.pv_kw.toFixed(0)}kW</text>
-      <text x="${10+(w/4-15)/2}" y="145" text-anchor="middle" fill="#608040" font-size="7">GHI:${snap.ghi.toFixed(0)}</text>
-      <text x="${10+(w/4-15)/2}" y="158" text-anchor="middle" fill="${snap.temp>30?'#e04050':snap.temp<10?'#4090d0':'#80a060'}" font-size="8">${snap.temp.toFixed(0)}°C</text>
-      <!-- ESS -->
-      <rect x="${w/4+12}" y="90" width="${w/4-15}" height="100" rx="5" fill="#081220" stroke="#4090d0" stroke-width="2"/>
-      <text x="${w/4+12+(w/4-15)/2}" y="115" text-anchor="middle" fill="#50b0f0" font-size="10" font-weight="600">🔋 储能</text>
-      <rect x="${w/4+18}" y="160" width="${w/4-27}" height="8" rx="4" fill="#0a1624" stroke="#3060a0" stroke-width="0.6"/>
-      <rect x="${w/4+18}" y="160" width="${(w/4-27)*socPct/100}" height="8" rx="4" fill="url(#socGrad)"/>
-      <text x="${w/4+12+(w/4-15)/2}" y="178" text-anchor="middle" fill="#a0d0a0" font-size="8">SOC ${socPct.toFixed(0)}%</text>
-      <!-- EV -->
-      <rect x="${2*w/4+14}" y="90" width="${w/4-15}" height="100" rx="5" fill="#100a0c" stroke="#e04050" stroke-width="2"/>
-      <text x="${2*w/4+14+(w/4-15)/2}" y="115" text-anchor="middle" fill="#f06878" font-size="10" font-weight="600">⚡ 充电</text>
-      <text x="${2*w/4+14+(w/4-15)/2}" y="130" text-anchor="middle" fill="#b06060" font-size="9">${snap.ev_total_kw.toFixed(0)}kW</text>
-      <text x="${2*w/4+14+(w/4-15)/2}" y="145" text-anchor="middle" fill="#906060" font-size="7">${snap.ev_active.toFixed(0)}/18 在用</text>
-      <!-- Building -->
-      <rect x="${3*w/4+16}" y="90" width="${w/4-20}" height="100" rx="5" fill="#101218" stroke="#8090a0" stroke-width="2"/>
-      <text x="${3*w/4+16+(w/4-20)/2}" y="115" text-anchor="middle" fill="#b0c0d0" font-size="10" font-weight="600">🏠 建筑</text>
-      <text x="${3*w/4+16+(w/4-20)/2}" y="130" text-anchor="middle" fill="#708090" font-size="9">${snap.bldg_total_kw.toFixed(0)}kW</text>
-      <text x="${3*w/4+16+(w/4-20)/2}" y="145" text-anchor="middle" fill="#607080" font-size="6">空调 ${(snap.bldg_components?.['空调']||0).toFixed(0)}kW</text>
-      <!-- Connections -->
-      <line x1="${w/2}" y1="58" x2="${w/2}" y2="64" stroke="#a0b0c0" stroke-width="2.5" opacity="${gridImp||gridExp?1:0.2}"/>
-      <line x1="${w/2}" y1="28" x2="${w/2}" y2="34" stroke="#60a0c0" stroke-width="2"/>
-      <line x1="${10+(w/4-15)/2}" y1="76" x2="${10+(w/4-15)/2}" y2="90" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
-      <line x1="${w/4+12+(w/4-15)/2}" y1="76" x2="${w/4+12+(w/4-15)/2}" y2="90" stroke="#4090d0" stroke-width="2"/>
-      <line x1="${2*w/4+14+(w/4-15)/2}" y1="76" x2="${2*w/4+14+(w/4-15)/2}" y2="90" stroke="#e04050" stroke-width="2"/>
-      <line x1="${3*w/4+16+(w/4-20)/2}" y1="76" x2="${3*w/4+16+(w/4-20)/2}" y2="90" stroke="#8090a0" stroke-width="2"/>
-      <!-- Flow indicators -->
-      ${snap.pv_kw>5?`<circle cx="${10+(w/4-15)/2}" cy="82" r="5" fill="#f0a020" filter="url(#g2)"/>`:''}
-      ${essCh?`<circle cx="${w/4+12+(w/4-15)/2}" cy="82" r="5" fill="#4090d0" filter="url(#g2)"/>`:''}
-      ${essDisch?`<circle cx="${w/4+12+(w/4-15)/2}" cy="86" r="5" fill="#60d040" filter="url(#g2)"/>`:''}
-      ${gridImp?`<circle cx="${w/2}" cy="61" r="5" fill="#e04050" filter="url(#g2)"/>`:''}
-      ${gridExp?`<circle cx="${w/2}" cy="69" r="5" fill="#30d0b0" filter="url(#g2)"/>`:''}
-    </svg>
-  `;
+// ---------- SLD on Canvas ----------
+function drawSP_SLD_Canvas(canvas, snap, data) {
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+  const cfg = data.config;
+  const ds = data.daily_summary[0];
+
+  const isDay = snap.ghi > 50;
+  ctx.fillStyle = isDay ? '#0a1628' : '#050d18';
+  ctx.fillRect(0, 0, w, h);
+
+  const socPct = snap.soc * 100;
+  const cx = w / 2;
+
+  // Grid
+  ctx.fillStyle = '#142840'; ctx.strokeStyle = '#3080b0'; ctx.lineWidth = 1.5;
+  roundRect(ctx, cx - 90, 10, 180, 22, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#d8ecf8'; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('大电网 10kV', cx, 26);
+
+  // Transformer
+  ctx.fillStyle = '#0f2038'; ctx.strokeStyle = '#4080b0'; ctx.lineWidth = 1.5;
+  roundRect(ctx, cx - 70, 38, 140, 26, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#c0ddf0'; ctx.font = 'bold 9px "Microsoft YaHei"';
+  ctx.fillText('箱变 2×1250kVA', cx, 54);
+  ctx.fillStyle = '#6090b0'; ctx.font = '7px "Microsoft YaHei"';
+  ctx.fillText('Dyn11 10/0.4kV', cx, 62);
+
+  // Busbar
+  ctx.fillStyle = '#b0b0b0'; ctx.strokeStyle = '#808080'; ctx.lineWidth = 1;
+  roundRect(ctx, 15, 70, w - 30, 12, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#0a1628'; ctx.font = 'bold 10px "Microsoft YaHei"';
+  ctx.fillText('400V AC 母线', cx, 79);
+
+  // Vertical connections
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#a0b0c0';
+  ctx.beginPath(); ctx.moveTo(cx, 64); ctx.lineTo(cx, 70); ctx.stroke();
+  ctx.strokeStyle = '#60a0c0';
+  ctx.beginPath(); ctx.moveTo(cx, 32); ctx.lineTo(cx, 38); ctx.stroke();
+
+  // 4 component panels
+  const comps = [
+    { x: 15, w: (w-40)/4, label: '☀ 光伏', val: snap.pv_kw.toFixed(0)+'kW', sub: 'GHI:'+snap.ghi.toFixed(0), color: '#f0a020', bg: '#0c1808' },
+    { x: 15+(w-40)/4+5, w: (w-40)/4, label: '🔋 储能', val: 'SOC '+(snap.soc*100).toFixed(0)+'%', sub: (snap.ess_charge_kw>2?'充'+snap.ess_charge_kw.toFixed(0):snap.ess_discharge_kw>2?'放'+snap.ess_discharge_kw.toFixed(0):'待机')+'kW', color: '#4090d0', bg: '#081220' },
+    { x: 15+2*((w-40)/4+5), w: (w-40)/4, label: '⚡ 充电', val: snap.ev_total_kw.toFixed(0)+'kW', sub: snap.ev_active.toFixed(0)+'/'+cfg.total_piles+' 在用', color: '#e04050', bg: '#100a0c' },
+    { x: 15+3*((w-40)/4+5), w: (w-40)/4, label: '🏠 建筑', val: snap.bldg_total_kw.toFixed(0)+'kW', sub: '空调'+(snap.bldg_components?.['空调']||0).toFixed(0)+'kW', color: '#8090a0', bg: '#101218' },
+  ];
+
+  comps.forEach(cp => {
+    const alpha = cp.label.includes('光伏') ? (snap.pv_kw > 5 ? 1 : 0.3) : 1;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = cp.bg; ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
+    roundRect(ctx, cp.x, 92, cp.w, 100, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = cp.color; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(cp.label, cp.x + cp.w/2, 118);
+    ctx.fillStyle = cp.color.replace('f0','e0').replace('40','60').replace('80','a0');
+    ctx.font = '10px "Microsoft YaHei"';
+    ctx.fillText(cp.val, cp.x + cp.w/2, 138);
+    ctx.fillStyle = cp.color.replace('f0a020','80a060').replace('4090d0','5080a0').replace('e04050','906060').replace('8090a0','607080');
+    ctx.font = '8px "Microsoft YaHei"';
+    ctx.fillText(cp.sub, cp.x + cp.w/2, 155);
+    ctx.globalAlpha = 1;
+  });
+
+  // ESS SOC bar
+  const essX = 15+(w-40)/4+5, essW = (w-40)/4;
+  ctx.fillStyle = '#0a1624'; ctx.strokeStyle = '#3060a0'; ctx.lineWidth = 0.8;
+  roundRect(ctx, essX + 8, 168, essW - 16, 10, 5); ctx.fill(); ctx.stroke();
+  const grad = ctx.createLinearGradient(essX + 8, 0, essX + 8 + essW - 16, 0);
+  grad.addColorStop(0, '#e04050'); grad.addColorStop(0.5, '#f0a020'); grad.addColorStop(1, '#60d040');
+  ctx.fillStyle = grad;
+  roundRect(ctx, essX + 8, 168, (essW - 16) * socPct / 100, 10, 5); ctx.fill();
+
+  // Connections from busbar to panels
+  comps.forEach(cp => {
+    ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cp.x + cp.w/2, 82); ctx.lineTo(cp.x + cp.w/2, 92); ctx.stroke();
+  });
+
+  // Flow indicators (animated dots)
+  if (snap.pv_kw > 5) { ctx.fillStyle = '#f0a020'; ctx.beginPath(); ctx.arc(comps[0].x + comps[0].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
+  const essFlow = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : null;
+  if (essFlow) { ctx.fillStyle = essFlow; ctx.beginPath(); ctx.arc(comps[1].x + comps[1].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
+  if (snap.grid_import_kw > 2) { ctx.fillStyle = '#e04050'; ctx.beginPath(); ctx.arc(cx, 67, 5, 0, Math.PI*2); ctx.fill(); }
+  if (snap.grid_export_kw > 2) { ctx.fillStyle = '#30d0b0'; ctx.beginPath(); ctx.arc(cx, 74, 5, 0, Math.PI*2); ctx.fill(); }
+
+  // Footer info
+  ctx.fillStyle = '#5a8aaa'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'right';
+  ctx.fillText(`光伏:${snap.pv_kw.toFixed(0)}kW · 负荷:${snap.load_total_kw.toFixed(0)}kW · 电网:${snap.grid_import_kw>1?'+'+snap.grid_import_kw.toFixed(0):snap.grid_export_kw>1?'-'+snap.grid_export_kw.toFixed(0):'0'}kW · ESS SOC:${(snap.soc*100).toFixed(1)}% · ${snap.tod}`, w - 12, h - 8);
 }
 
-// ---------- Charging Canvas ----------
-function drawSP_ChargingCanvas(snap, data) {
-  const canvas = document.getElementById('spChargingCanvas');
-  if (!canvas) return;
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.lineTo(x + w - r, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  ctx.lineTo(x + r, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
+  ctx.lineTo(x, y + r);
+  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.closePath();
+}
+
+// ---------- PV Array Canvas ----------
+function drawSP_PVArray(canvas, snap, data) {
   const w = canvas.width = canvas.clientWidth;
   const h = canvas.height = canvas.clientHeight;
   const ctx = canvas.getContext('2d');
 
-  // Find nearest pile snapshot
-  const pileCfg = data.pile_config || [];
-  const pileSnaps = data.pile_timeline || [];
-  const mIdx = Math.floor(scadaProMinute / 15);
-  const ps = pileSnaps[Math.min(mIdx, pileSnaps.length - 1)];
+  // Sky gradient
+  const isDay = snap.ghi > 30;
+  const skyTop = isDay ? '#1a3050' : '#080810';
+  const skyBot = isDay ? '#2a5070' : '#0a0a18';
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h * 0.45);
+  skyGrad.addColorStop(0, skyTop); skyGrad.addColorStop(1, skyBot);
+  ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, w, h);
 
-  // Occupancy
-  const occupiedSet = new Set((ps?.piles || []).map(p => p.pile_idx));
+  // Sun
+  if (isDay && snap.ghi > 50) {
+    const sunX = w * 0.5 + (scadaProMinute / 720 - 1) * w * 0.35;
+    const sunY = h * 0.18 - Math.sin((scadaProMinute - 360) / 1440 * Math.PI) * h * 0.1;
+    const sunAlpha = Math.max(0.1, 1 - snap.cloud_cover);
+    const sunGrad = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 45);
+    sunGrad.addColorStop(0, `rgba(255,240,200,${sunAlpha})`);
+    sunGrad.addColorStop(0.3, `rgba(255,200,80,${sunAlpha*0.6})`);
+    sunGrad.addColorStop(1, 'rgba(255,160,30,0)');
+    ctx.fillStyle = sunGrad; ctx.beginPath(); ctx.arc(sunX, sunY, 45, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Clouds
+  const cloudAlpha = snap.cloud_cover;
+  for (let i = 0; i < 8; i++) {
+    const cx = ((i * 137 + 50) % w);
+    const cy = 20 + (i * 43) % 60;
+    ctx.fillStyle = `rgba(180,190,200,${cloudAlpha * 0.5})`;
+    ctx.beginPath(); ctx.ellipse(cx, cy, 35 + i * 7, 15, 0, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Ground / carport structure
+  ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0, h * 0.45, w, h * 0.55);
+
+  // Carport roof beams
+  ctx.strokeStyle = '#505050'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, h * 0.42); ctx.lineTo(w, h * 0.42); ctx.stroke();
+
+  // Solar panel arrays (5 strings × 6 panels each = 30 panels)
+  const nStrings = 5; const nPanelsPerString = 6;
+  const stringAreaW = (w - 60) / nStrings;
+  const panelW = stringAreaW * 0.7; const panelH = 24;
+  const startY = h * 0.47;
+
+  for (let s = 0; s < nStrings; s++) {
+    const sx = 30 + s * stringAreaW + stringAreaW * 0.15;
+
+    // String label
+    ctx.fillStyle = '#80a060'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(`串${s+1}`, sx + stringAreaW * 0.35, startY - 10);
+
+    const stringPower = snap.pv_kw / nStrings;
+    ctx.fillStyle = '#608040'; ctx.font = '8px monospace';
+    ctx.fillText(stringPower.toFixed(0)+'kW', sx + stringAreaW * 0.35, startY - 1);
+
+    for (let p = 0; p < nPanelsPerString; p++) {
+      const py = startY + p * (panelH + 4);
+      // Panel irradiance color
+      const panelIrrad = Math.max(0, (snap.ghi / 1000) * (1 - snap.cloud_cover * 0.7));
+      const r = Math.min(255, Math.round(40 + panelIrrad * 200));
+      const g = Math.min(255, Math.round(20 + panelIrrad * 220));
+      const b = Math.min(255, Math.round(5 + panelIrrad * 30));
+      const alpha = isDay ? 0.7 + panelIrrad * 0.3 : 0.15;
+
+      ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
+      ctx.fillRect(sx, py, panelW, panelH);
+
+      // Panel border
+      ctx.strokeStyle = `rgba(180,180,180,0.4)`; ctx.lineWidth = 0.8;
+      ctx.strokeRect(sx, py, panelW, panelH);
+
+      // Grid lines on panel
+      ctx.strokeStyle = `rgba(255,255,255,0.15)`; ctx.lineWidth = 0.4;
+      ctx.beginPath(); ctx.moveTo(sx + panelW/3, py); ctx.lineTo(sx + panelW/3, py + panelH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(sx + 2*panelW/3, py); ctx.lineTo(sx + 2*panelW/3, py + panelH); ctx.stroke();
+    }
+  }
+
+  // Stats panel bottom
+  ctx.fillStyle = 'rgba(10,22,40,0.9)'; ctx.fillRect(0, h - 65, w, 65);
+  ctx.fillStyle = '#f0a020'; ctx.font = 'bold 13px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText(`☀ 光伏阵列 · ${(data.config.pv_cap_kwp||1231).toFixed(0)} kWp`, 15, h - 40);
+  const stats = [
+    `当前出力: ${snap.pv_kw.toFixed(0)} kW`,
+    `GHI: ${snap.ghi.toFixed(0)} W/m²`,
+    `云量: ${(snap.cloud_cover*100).toFixed(0)}%`,
+    `温度: ${snap.temp.toFixed(0)}°C`,
+    `利用率: ${snap.pv_kw > 5 ? (snap.pv_kw/(data.config.pv_cap_kwp||1231)*100).toFixed(1) : '0.0'}%`,
+  ];
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '10px monospace';
+  stats.forEach((s, i) => {
+    ctx.fillText(s, 15 + i * (w-30)/stats.length, h - 20);
+  });
+}
+
+// ---------- ESS Cabinets Canvas ----------
+function drawSP_ESSCabinets(canvas, snap, data) {
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#060d18'; ctx.fillRect(0, 0, w, h);
+
+  // Room / container background
+  ctx.fillStyle = '#0a1220'; ctx.strokeStyle = '#1a3050'; ctx.lineWidth = 2;
+  roundRect(ctx, 20, 20, w - 40, h - 40, 8); ctx.fill(); ctx.stroke();
+
+  // Title
+  ctx.fillStyle = '#50b0f0'; ctx.font = 'bold 12px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('🔋 储能系统 — 电池柜阵列', w/2, 48);
+
+  // 10 battery cabinets in 2 rows
+  const nCabinets = 10;
+  const cabW = (w - 100) / 5;
+  const cabH = 140;
+
+  for (let i = 0; i < nCabinets; i++) {
+    const row = Math.floor(i / 5);
+    const col = i % 5;
+    const cx = 40 + col * (cabW + 8), cy = 65 + row * (cabH + 20);
+
+    // Cabinet frame
+    ctx.fillStyle = '#0c1828'; ctx.strokeStyle = '#204070'; ctx.lineWidth = 1.5;
+    roundRect(ctx, cx, cy, cabW, cabH, 4); ctx.fill(); ctx.stroke();
+
+    // Cabinet label
+    ctx.fillStyle = '#4080b0'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(`柜${i+1}`, cx + cabW/2, cy - 6);
+
+    // SOC bar (vertical)
+    const barW = cabW * 0.6, barH = cabH - 30;
+    const barX = cx + (cabW - barW) / 2, barY = cy + 20;
+
+    // Individual cabinet SOC (vary slightly based on index)
+    const cabSoc = Math.max(0.05, Math.min(0.95, snap.soc + (i - 4.5) * 0.02));
+    const fillH = barH * cabSoc;
+
+    ctx.fillStyle = '#081018'; ctx.strokeStyle = '#204060'; ctx.lineWidth = 0.8;
+    roundRect(ctx, barX, barY, barW, barH, 3); ctx.fill(); ctx.stroke();
+
+    // SOC fill
+    const grad = ctx.createLinearGradient(0, barY + barH, 0, barY);
+    grad.addColorStop(0, '#e04050'); grad.addColorStop(0.4, '#f0a020'); grad.addColorStop(1, '#60d040');
+    ctx.fillStyle = grad;
+    roundRect(ctx, barX, barY + barH - fillH, barW, fillH, 3); ctx.fill();
+
+    // SOC percentage
+    ctx.fillStyle = '#a0d0a0'; ctx.font = 'bold 9px monospace';
+    ctx.fillText((cabSoc*100).toFixed(0)+'%', cx + cabW/2, barY + barH/2 + 4);
+
+    // Power indicator
+    const cabPower = (snap.ess_charge_kw + snap.ess_discharge_kw) / nCabinets;
+    const isCharging = snap.ess_charge_kw > 2;
+    const isDischarging = snap.ess_discharge_kw > 2;
+    ctx.fillStyle = isCharging ? '#4090d0' : isDischarging ? '#60d040' : '#4a6a5a';
+    ctx.font = '8px monospace';
+    const arrow = isCharging ? '↓' : isDischarging ? '↑' : '·';
+    ctx.fillText(`${arrow}${cabPower.toFixed(0)}kW`, cx + cabW/2, cy + cabH - 5);
+  }
+
+  // Summary panel
+  ctx.fillStyle = 'rgba(10,22,40,0.95)'; ctx.fillRect(0, h - 55, w, 55);
+  ctx.strokeStyle = '#204070'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h - 55); ctx.lineTo(w, h - 55); ctx.stroke();
+
+  const essState = snap.ess_charge_kw > 2 ? '充电中' : snap.ess_discharge_kw > 2 ? '放电中' : '待机';
+  const essColor = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : '#5a8aaa';
+  const essPower = snap.ess_charge_kw > 2 ? snap.ess_charge_kw : snap.ess_discharge_kw;
+
+  ctx.fillStyle = '#50b0f0'; ctx.font = 'bold 13px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText(`🔋 储能系统 · ${(data.config.ess_cap_kwh||2000).toFixed(0)}kWh / ${(data.config.ess_pow_kw||1000).toFixed(0)}kW`, 15, h - 28);
+
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '10px monospace';
+  const stats2 = [
+    `总SOC: ${(snap.soc*100).toFixed(1)}%`,
+    `${essState}: ${essPower.toFixed(0)} kW`,
+    `可用容量: ${(snap.soc*(data.config.ess_cap_kwh||2000)).toFixed(0)} kWh`,
+    `额定功率: ${(data.config.ess_pow_kw||1000).toFixed(0)} kW`,
+    `柜数: 10 × 215kWh`,
+  ];
+  stats2.forEach((s, i) => {
+    ctx.fillText(s, 15 + i * (w - 30) / stats2.length, h - 10);
+  });
+}
+
+// ---------- Building Floor Plan Canvas ----------
+function drawSP_BuildingFloor(canvas, snap, data) {
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0c1624'; ctx.fillRect(0, 0, w, h);
+
+  // Floor plan zones
+  const zones = [
+    { x: 30, y: 50, w: w*0.35-40, h: h*0.55-60, name: '餐饮区', comp: '餐饮', icon: '🍽️', loadBase: 30 },
+    { x: w*0.35+20, y: 50, w: w*0.35-40, h: h*0.55-60, name: '休息区', comp: '照明', icon: '🛋️', loadBase: 20 },
+    { x: 30, y: h*0.55+10, w: w*0.22-30, h: h*0.35-20, name: '办公区', comp: '办公', icon: '💼', loadBase: 12 },
+    { x: w*0.25+10, y: h*0.55+10, w: w*0.22-30, h: h*0.35-20, name: '卫生间', comp: '热水', icon: '🚻', loadBase: 15 },
+    { x: w*0.48+10, y: h*0.55+10, w: w*0.22-30, h: h*0.35-20, name: '商店', comp: '动力', icon: '🏪', loadBase: 10 },
+    { x: w*0.72, y: 50, w: w*0.25-20, h: h*0.82-60, name: '空调机房', comp: '空调', icon: '❄️', loadBase: 60 },
+  ];
+
+  zones.forEach(z => {
+    const compLoad = (snap.bldg_components || {})[z.comp] || 0;
+    const maxLoad = z.loadBase * 1.5;
+    const intensity = Math.min(1, compLoad / maxLoad);
+    const r = Math.round(10 + intensity * 60);
+    const g = Math.round(20 + intensity * 100);
+    const b = Math.round(30 + intensity * 190);
+
+    // Zone fill
+    ctx.fillStyle = `rgba(${r},${g},${b},0.6)`;
+    ctx.strokeStyle = `rgba(${r+50},${g+50},${b+30},0.8)`; ctx.lineWidth = 1.5;
+    roundRect(ctx, z.x, z.y, z.w, z.h, 6); ctx.fill(); ctx.stroke();
+
+    // Zone label
+    ctx.fillStyle = '#c8e0f0'; ctx.font = 'bold 12px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(z.icon + ' ' + z.name, z.x + z.w/2, z.y + z.h/2 - 8);
+
+    // Load display
+    const loadColor = intensity > 0.7 ? '#f08080' : intensity > 0.4 ? '#f0c040' : '#80d080';
+    ctx.fillStyle = loadColor; ctx.font = 'bold 14px monospace';
+    ctx.fillText(compLoad.toFixed(0) + ' kW', z.x + z.w/2, z.y + z.h/2 + 18);
+
+    // Progress bar
+    const barW = z.w * 0.6, barH = 6;
+    const barX = z.x + (z.w - barW)/2, barY = z.y + z.h/2 + 28;
+    ctx.fillStyle = '#1a1a2a'; roundRect(ctx, barX, barY, barW, barH, 3); ctx.fill();
+    const barGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+    barGrad.addColorStop(0, '#40c040'); barGrad.addColorStop(0.6, '#f0c040'); barGrad.addColorStop(1, '#f04040');
+    ctx.fillStyle = barGrad;
+    roundRect(ctx, barX, barY, barW * intensity, barH, 3); ctx.fill();
+  });
+
+  // Outdoor: EV charging connector area
+  ctx.fillStyle = '#0a1a10'; ctx.strokeStyle = '#306030'; ctx.lineWidth = 1;
+  const outX = w*0.72, outY = h*0.45-10, outW = w*0.25-20, outH = h*0.5+30;
+  roundRect(ctx, outX, outY, outW, outH, 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#80a060'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('🚗 充电广场', outX + outW/2, outY + 18);
+  ctx.fillStyle = '#60a040'; ctx.font = '12px monospace';
+  ctx.fillText(snap.ev_total_kw.toFixed(0) + ' kW', outX + outW/2, outY + 40);
+  ctx.fillStyle = '#608040'; ctx.font = '9px "Microsoft YaHei"';
+  ctx.fillText(snap.ev_active.toFixed(0) + ' 辆车充电中', outX + outW/2, outY + 58);
+
+  // Agents (simplified dots)
+  const nAgents = Math.round(snap.bldg_total_kw / 2.5);  // ~2.5kW per agent
+  for (let i = 0; i < Math.min(nAgents, 40); i++) {
+    const z = zones[Math.floor(i * zones.length / 40)];
+    const ax = z.x + 20 + Math.random() * (z.w - 40);
+    const ay = z.y + z.h/2 + 40 + Math.random() * (z.h/2 - 50);
+    ctx.fillStyle = `rgba(200,224,240,${0.4 + Math.random()*0.4})`;
+    ctx.beginPath(); ctx.arc(ax, ay, 3, 0, Math.PI*2); ctx.fill();
+  }
+
+  // Stats footer
+  ctx.fillStyle = 'rgba(10,22,40,0.95)'; ctx.fillRect(0, h - 45, w, 45);
+  ctx.strokeStyle = '#204070'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h - 45); ctx.lineTo(w, h - 45); ctx.stroke();
+  ctx.fillStyle = '#b0c0d0'; ctx.font = 'bold 13px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText(`🏠 建筑负荷 · 总计 ${snap.bldg_total_kw.toFixed(0)} kW`, 15, h - 18);
+  const comps = ['空调','餐饮','照明','热水','办公','动力'];
+  const colors = ['#f0b0b0','#f0c880','#e0e080','#80b0d0','#80c0c0','#a0a0b0'];
+  ctx.font = '9px monospace';
+  comps.forEach((c, i) => {
+    ctx.fillStyle = colors[i];
+    ctx.fillText(`${c}:${(snap.bldg_components||{})[c]?.toFixed(0)||0}kW`, 15 + i*(w-30)/comps.length, h - 5);
+  });
+}
+
+// ---------- Charging Station Canvas V2 (unified) ----------
+function drawSP_ChargingCanvasV2(canvas, snap, data, pileSnap) {
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  const pileCfg = data.pile_config || [];
+  const occupiedSet = new Set((pileSnap?.piles || []).map(p => p.pile_idx));
 
   ctx.fillStyle = '#0a1a10'; ctx.fillRect(0, 0, w, h);
 
   // Road
-  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, h*0.82, w, h*0.18);
-  ctx.strokeStyle = '#f0c040'; ctx.setLineDash([24, 12]); ctx.lineWidth = 1.2;
-  ctx.beginPath(); ctx.moveTo(0, h*0.85); ctx.lineTo(w, h*0.85); ctx.stroke();
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, h*0.78, w, h*0.22);
+  ctx.strokeStyle = '#f0c040'; ctx.setLineDash([28, 14]); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(0, h*0.82); ctx.lineTo(w, h*0.82); ctx.stroke();
   ctx.setLineDash([]);
+
+  // Road markings
+  ctx.fillStyle = '#808080'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('← 高速出口 · 服务区入口 →', w/2, h*0.94);
 
   const nCols = 6;
   const colW = w / (nCols + 1);
-  const rowOffsets = [h*0.13, h*0.38, h*0.62];
+  const rowOffsets = [h*0.12, h*0.36, h*0.58];
 
   // Parking spots
   pileCfg.forEach((pile, i) => {
     const col = i % nCols, row = Math.floor(i / nCols);
     const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
-    const spotW = colW * 0.78, spotH = h * 0.21;
+    const spotW = colW * 0.78, spotH = h * 0.2;
     const occupied = occupiedSet.has(i);
 
     ctx.fillStyle = occupied ? 'rgba(240,160,32,0.12)' : 'rgba(255,255,255,0.02)';
     ctx.strokeStyle = pile.type === '480kW' ? '#e04050' : '#4a8a4a';
-    ctx.lineWidth = pile.type === '480kW' ? 1.5 : 0.8;
+    ctx.lineWidth = pile.type === '480kW' ? 1.8 : 0.8;
     ctx.fillRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
     ctx.strokeRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
-    ctx.fillStyle = pile.type === '480kW' ? '#e06070' : '#6aaa6a';
-    ctx.font = '7px "Microsoft YaHei"'; ctx.textAlign = 'center';
-    ctx.fillText(pile.id, cx, cy - spotH/2 - 3);
-    // Charger
+
+    // Charger post
     ctx.fillStyle = occupied ? '#f0a020' : '#4a8a4a';
-    ctx.fillRect(cx - 3, cy - spotH/2 + 3, 6, 10);
-    ctx.fillStyle = '#000'; ctx.fillRect(cx - 1.5, cy - spotH/2 + 5, 3, 7);
+    ctx.fillRect(cx - 4, cy - spotH/2 + 3, 8, 12);
+    ctx.fillStyle = '#000'; ctx.fillRect(cx - 2, cy - spotH/2 + 5, 4, 8);
   });
 
   // Draw cars
-  if (ps?.piles) {
-    ps.piles.forEach(car => {
+  if (pileSnap?.piles) {
+    pileSnap.piles.forEach(car => {
       const pileIdx = car.pile_idx;
       const col = pileIdx % nCols, row = Math.floor(pileIdx / nCols);
       const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
-      const spotW = colW * 0.78, spotH = h * 0.21;
-      const carW = spotW * 0.65, carH = spotH * 0.58;
+      const spotW = colW * 0.78, spotH = h * 0.2;
+      const carW = spotW * 0.65, carH = spotH * 0.55;
       const carX = cx - carW/2, carY = cy - carH/2;
-
-      // Shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(carX + 1.5, carY + 1.5, carW, carH);
-      // Body
       const isCompleted = car.status === 'completed';
+
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(carX + 2, carY + 2, carW, carH);
       ctx.fillStyle = isCompleted ? '#80d080' : (car.car_color || '#60a0d0');
       ctx.fillRect(carX, carY, carW, carH);
-      // Roof
       ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(carX + carW*0.15, carY, carW*0.7, carH*0.55);
-      // Windows
       ctx.fillStyle = 'rgba(100,180,240,0.45)';
-      ctx.fillRect(carX + carW*0.2, carY + 1.5, carW*0.22, carH*0.45);
-      ctx.fillRect(carX + carW*0.55, carY + 1.5, carW*0.22, carH*0.45);
+      ctx.fillRect(carX + carW*0.2, carY + 2, carW*0.22, carH*0.45);
+      ctx.fillRect(carX + carW*0.55, carY + 2, carW*0.22, carH*0.45);
 
-      // Completed glow
       if (isCompleted) {
         ctx.shadowColor = '#40ff40'; ctx.shadowBlur = 6;
-        ctx.fillStyle = 'rgba(64,255,64,0.15)'; ctx.fillRect(carX - 1, carY - 1, carW + 2, carH + 2);
+        ctx.fillStyle = 'rgba(64,255,64,0.2)'; ctx.fillRect(carX - 1, carY - 1, carW + 2, carH + 2);
         ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
       }
 
-      // SOC bar
-      const barW = carW * 0.7, barH = 3;
-      const barX = carX + carW*0.15, barY = carY + carH + 2;
-      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(barX, barY, barW, barH);
+      // SOC label
       const soc = car.soc || 0;
-      if (isCompleted) {
-        ctx.fillStyle = '#40d040'; ctx.fillRect(barX, barY, barW, barH);
-        ctx.fillStyle = '#fff'; ctx.font = '6px "Microsoft YaHei"'; ctx.textAlign = 'center';
-        ctx.fillText('✓', cx, barY - 1);
-      } else {
-        const socGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-        socGrad.addColorStop(0, '#e04050'); socGrad.addColorStop(0.5, '#f0a020'); socGrad.addColorStop(1, '#60d040');
-        ctx.fillStyle = socGrad; ctx.fillRect(barX, barY, barW * Math.min(1, soc), barH);
-        ctx.fillStyle = '#fff'; ctx.font = 'bold 6px "Microsoft YaHei"'; ctx.textAlign = 'center';
-        ctx.fillText((soc*100).toFixed(0)+'%', cx, barY - 1);
-      }
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 7px "Microsoft YaHei"'; ctx.textAlign = 'center';
+      const socText = isCompleted ? '✓ 满' : (soc*100).toFixed(0)+'%';
+      ctx.fillText(socText, cx, cy + carH/2 + 8);
+      ctx.fillStyle = '#5a8aaa'; ctx.font = '6px "Microsoft YaHei"';
+      ctx.fillText(car.car_type || '', cx, cy + carH/2 + 16);
     });
   }
 
-  // Legend
-  ctx.fillStyle = '#60d040'; ctx.fillRect(8, 6, 8, 8);
-  ctx.fillStyle = '#8ab4d0'; ctx.font = '7px "Microsoft YaHei"'; ctx.textAlign = 'left';
-  ctx.fillText('空闲', 19, 13);
-  ctx.fillStyle = '#f0a020'; ctx.fillRect(48, 6, 8, 8);
-  ctx.fillText('充电中', 59, 13);
-  ctx.fillStyle = '#40d040'; ctx.fillRect(88, 6, 8, 8);
-  ctx.fillText('已完成', 99, 13);
-
-  ctx.textAlign = 'right';
-  ctx.fillText(`在用:${snap.ev_active.toFixed(0)}辆 | 排队:${snap.ev_waiting.toFixed(0)} | 功率:${snap.ev_total_kw.toFixed(0)}kW`, w-8, 13);
+  // Stats
+  ctx.fillStyle = 'rgba(10,26,16,0.95)'; ctx.fillRect(0, h - 40, w, 40);
+  ctx.strokeStyle = '#306030'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, h - 40); ctx.lineTo(w, h - 40); ctx.stroke();
+  ctx.fillStyle = '#f06878'; ctx.font = 'bold 12px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText(`🚗 充电站 · ${cfg.total_piles}终端`, 15, h - 16);
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '10px monospace';
+  ctx.fillText(`在用:${snap.ev_active.toFixed(0)} · 排队:${snap.ev_waiting.toFixed(0)} · 功率:${snap.ev_total_kw.toFixed(0)}kW · 16×120kW + 2×480kW`, 15 + 180, h - 16);
 }
 
 // ---------- SOC Chart ----------
