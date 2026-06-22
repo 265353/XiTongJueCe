@@ -342,6 +342,7 @@ class MicrogridOptimizer:
                 'soc_curve': np.full(T, 0.5),
                 'ess_charge': ess_ch, 'ess_discharge': ess_disch,
                 'loss_of_load': np.zeros(T),
+                'final_soc': 0.5,
             }
 
         # v6.3: ESS温度衰减 (低温时可用容量下降)

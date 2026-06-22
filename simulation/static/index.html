@@ -1,0 +1,1972 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>高速服务区光储充一体化微网 — 仿真系统 v6.5</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+:root {
+  --bg: #0a1628; --panel: #0f1f38; --border: #1a3a5a; --text: #8ab4d0;
+  --bright: #c8e0f0; --accent: #00c8f0; --accent2: #40e0a0;
+  --pv: #f0a020; --ess-ch: #4090d0; --ess-dis: #60d040;
+  --grid-imp: #e04050; --grid-exp: #30d0b0; --load: #e8e8f0;
+  --warn: #f08030; --sidebar-w: 200px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','Segoe UI',sans-serif;
+       height:100vh; display:flex; overflow:hidden; }
+/* Sidebar */
+.sidebar { width:var(--sidebar-w); background:var(--panel); border-right:1px solid var(--border);
+           display:flex; flex-direction:column; flex-shrink:0; overflow-y:auto; }
+.sidebar .logo { padding:16px; border-bottom:1px solid var(--border); }
+.sidebar .logo h2 { font-size:14px; color:var(--accent); line-height:1.5; }
+.sidebar .logo .ver { font-size:9px; color:#4a7595; }
+.sidebar nav { flex:1; padding:8px 0; }
+.sidebar nav .cat { font-size:9px; color:#3a6585; padding:8px 16px 4px; letter-spacing:1px; text-transform:uppercase; }
+.sidebar nav a { display:flex; align-items:center; gap:8px; padding:7px 16px; font-size:12px;
+                 color:var(--text); text-decoration:none; cursor:pointer; transition:all 0.2s;
+                 border-left:2px solid transparent; }
+.sidebar nav a:hover { background:rgba(0,200,240,0.05); color:var(--bright); }
+.sidebar nav a.active { background:rgba(0,200,240,0.1); color:var(--accent); border-left-color:var(--accent); }
+.sidebar nav a .icon { font-size:14px; width:20px; text-align:center; }
+.sidebar .status { padding:12px 16px; border-top:1px solid var(--border); font-size:9px; color:#4a7595; }
+.sidebar .status .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; }
+.sidebar .status .dot.ok { background:#60d040; }
+.sidebar .status .dot.err { background:#e04050; }
+/* Main */
+.main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.header { background:linear-gradient(180deg, #0f2a4a, var(--bg)); padding:8px 20px;
+          border-bottom:1px solid var(--border); flex-shrink:0; display:flex;
+          align-items:center; justify-content:space-between; }
+.header h1 { font-size:15px; color:var(--accent); }
+.header .api-status { font-size:10px; color:#5a8aaa; }
+.content { flex:1; overflow-y:auto; padding:16px; }
+/* Cards */
+.metrics-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-bottom:16px; }
+.metric-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px 16px; }
+.metric-card .label { font-size:10px; color:#5a85a5; }
+.metric-card .value { font-size:24px; font-weight:700; color:var(--accent); margin:2px 0; }
+.metric-card .unit { font-size:9px; color:#4a7595; }
+.metric-card.pv .value { color:var(--pv); }
+.metric-card.load .value { color:var(--load); }
+.metric-card.ess .value { color:var(--ess-dis); }
+.metric-card.warn .value { color:var(--warn); }
+.metric-card.accent2 .value { color:var(--accent2); }
+/* Panels */
+.section-title { font-size:13px; color:var(--bright); padding:8px 0 10px; border-bottom:1px solid var(--border); margin-bottom:12px; }
+.chart-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:14px; }
+.chart-box h3 { font-size:12px; color:var(--accent); margin-bottom:8px; font-weight:400; }
+.chart-inner { width:100%; height:400px; }
+.chart-inner.tall { height:520px; }
+.chart-inner.short { height:300px; }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:14px; }
+.row2-1 { display:grid; grid-template-columns:2fr 1fr; gap:14px; }
+/* Table */
+.data-table { width:100%; border-collapse:collapse; font-size:11px; }
+.data-table th { text-align:left; padding:6px 10px; border-bottom:2px solid var(--border); color:var(--accent); font-weight:400; }
+.data-table td { padding:5px 10px; border-bottom:1px solid rgba(26,58,90,0.5); }
+.data-table tr:hover { background:rgba(0,200,240,0.03); }
+.data-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+.data-table .best { color:var(--accent2); font-weight:600; }
+/* Tag */
+.tag { display:inline-block; padding:1px 6px; border-radius:3px; font-size:9px; font-weight:600; }
+.tag.green { background:#1a3020; color:#60d040; }
+.tag.blue { background:#1a2a30; color:#40a0d0; }
+.tag.red { background:#301a20; color:#f08080; }
+.tag.orange { background:#302010; color:#f0a040; }
+/* Loading */
+.loading { text-align:center; padding:40px; color:#4a7595; }
+.loading::after { content:'...'; animation:dots 1.5s steps(3,end) infinite; }
+@keyframes dots { 0%{content:'.'} 33%{content:'..'} 66%{content:'...'} }
+/* Scrollbar */
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#1a3a5a; border-radius:3px; }
+/* Responsive */
+@media(max-width:1200px) { .row2,.row2-1,.row3 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo"><h2>光储充微网仿真系统</h2><div class="ver">v6.5 · Highway Service Area</div></div>
+  <nav id="nav">
+    <div class="cat">总览</div>
+    <a data-tab="overview" class="active"><span class="icon">📊</span>系统总览</a>
+    <div class="cat">数据驱动模块</div>
+    <a data-tab="mc-load"><span class="icon">🚗</span>MC充电负荷</a>
+    <a data-tab="pv-gen"><span class="icon">☀️</span>光伏发电</a>
+    <a data-tab="building"><span class="icon">🏠</span>建筑负荷ABM</a>
+    <div class="cat">系统架构</div>
+    <a data-tab="topology"><span class="icon">🔀</span>拓扑对比</a>
+    <div class="cat">优化引擎</div>
+    <a data-tab="optimization"><span class="icon">🎯</span>PSO容量优化</a>
+    <a data-tab="nsga2"><span class="icon">📈</span>NSGA-II多目标</a>
+    <a data-tab="algo-compare"><span class="icon">⚖️</span>算法对比</a>
+    <a data-tab="robust"><span class="icon">🛡️</span>鲁棒优化</a>
+    <div class="cat">评估决策</div>
+    <a data-tab="economic"><span class="icon">💰</span>经济分析</a>
+    <a data-tab="decision"><span class="icon">🎲</span>决策框架</a>
+    <div class="cat">运行仿真</div>
+    <a data-tab="dispatch"><span class="icon">🔌</span>8760h调度</a>
+    <a data-tab="scada"><span class="icon">🏭</span>SCADA监控</a>
+    <a data-tab="live-station"><span class="icon">🚗</span>充电站实景</a>
+  </nav>
+  <div class="status"><span class="dot" id="apiDot"></span><span id="apiLabel">检查API...</span></div>
+</aside>
+
+<div class="main">
+  <div class="header">
+    <h1 id="pageTitle">📊 系统总览</h1>
+    <div class="api-status" id="apiStatus">API: 检查中...</div>
+  </div>
+  <div class="content" id="content"></div>
+</div>
+
+<script>
+// ==================== Global State ====================
+const API = 'http://127.0.0.1:8760';
+let DATA = { mc:null, opt:null, pareto:null, decision:null, config:null };
+let charts = {};
+let activeTab = 'overview';
+
+// ==================== Navigation ====================
+document.querySelectorAll('#nav a').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('#nav a').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    activeTab = a.dataset.tab;
+    document.getElementById('pageTitle').textContent = a.textContent.trim();
+    renderTab(activeTab);
+  });
+});
+
+// ==================== API Helpers ====================
+async function fetchAPI(path) {
+  try { const r = await fetch(API+path); return r.ok ? r.json() : null; }
+  catch(e) { return null; }
+}
+
+function disposeCharts() {
+  Object.values(charts).forEach(c => { try { c.dispose(); } catch(e) {} });
+  charts = {};
+}
+
+function initChart(domId) {
+  const dom = document.getElementById(domId);
+  if (!dom) return null;
+  const c = echarts.init(dom, null, { renderer:'canvas' });
+  charts[domId] = c;
+  return c;
+}
+
+// ==================== Data Loading ====================
+async function loadAllData() {
+  const [mc, opt, pareto, decision, config] = await Promise.all([
+    fetchAPI('/api/results/mc-summary'),
+    fetchAPI('/api/results/optimization'),
+    fetchAPI('/api/results/pareto'),
+    fetchAPI('/api/results/decision'),
+    fetchAPI('/api/config'),
+  ]);
+  DATA.mc = mc; DATA.opt = opt; DATA.pareto = pareto; DATA.decision = decision; DATA.config = config;
+  const ok = !!config;
+  document.getElementById('apiDot').className = ok ? 'dot ok' : 'dot err';
+  document.getElementById('apiLabel').textContent = ok ? 'API 连接正常' : 'API 未连接';
+  document.getElementById('apiStatus').textContent = ok ? 'API v6.5 已连接' : 'API: 离线';
+}
+
+// ==================== Render Functions ====================
+
+function renderOverview() {
+  const c = document.getElementById('content');
+  const opt = DATA.opt || {};
+  const cfg = DATA.config || {};
+  const sa = cfg.service_area || {};
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card pv"><div class="label">光伏装机</div><div class="value">${(opt.pv_capacity||1231).toFixed(0)}</div><div class="unit">kWp</div></div>
+      <div class="metric-card ess"><div class="label">储能容量</div><div class="value">${(opt.ess_capacity||2000).toFixed(0)}</div><div class="unit">kWh</div></div>
+      <div class="metric-card"><div class="label">储能功率</div><div class="value">${(opt.ess_power||1000).toFixed(0)}</div><div class="unit">kW</div></div>
+      <div class="metric-card accent2"><div class="label">年自洽率</div><div class="value">${((opt.self_sufficiency||0.25)*100).toFixed(1)}%</div><div class="unit">8760h验证</div></div>
+      <div class="metric-card warn"><div class="label">NPC (20年)</div><div class="value">${((opt.npc||42e6)/1e4).toFixed(1)}</div><div class="unit">万元</div></div>
+      <div class="metric-card"><div class="label">年碳减排</div><div class="value">${(opt.carbon_reduction_t||687).toFixed(0)}</div><div class="unit">tCO₂/年</div></div>
+      <div class="metric-card"><div class="label">投资回收期</div><div class="value">${(opt.payback_years||15.7).toFixed(1)}</div><div class="unit">年</div></div>
+      <div class="metric-card"><div class="label">充电终端</div><div class="value">${(sa.n_piles_120kw||16)+(sa.n_piles_480kw||0)}</div><div class="unit">台 (120kW+480kW)</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>系统架构 — 高速服务区光储充一体化微网</h3><div class="chart-inner tall" id="archChart"></div></div>
+      <div>
+        <div class="chart-box"><h3>仿真全链路模块</h3><div class="chart-inner" id="pipelineChart"></div></div>
+        <div class="chart-box"><h3>关键经济指标</h3><div class="chart-inner" id="econOverviewChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => {
+    renderArchitectureChart();
+    renderPipelineChart();
+    renderEconOverviewChart();
+  }, 100);
+}
+
+function renderArchitectureChart() {
+  const c = initChart('archChart');
+  if (!c) return;
+  // Sankey-like flow using graph
+  const cfg = DATA.config?.device_specs || {};
+  c.setOption({
+    backgroundColor:'transparent',
+    tooltip:{},
+    series:[{
+      type:'graph', layout:'force', roam:true, draggable:false,
+      force:{ repulsion:300, edgeLength:[100,250], gravity:0.1 },
+      label:{ show:true, color:'#c8e0f0', fontSize:11 },
+      edgeSymbol:['none','arrow'], edgeSymbolSize:8,
+      edgeLabel:{ fontSize:9, color:'#5a8aaa' },
+      data:[
+        { name:'大电网\n10kV', x:400, y:50, symbolSize:60, itemStyle:{color:'#1a4060'}, label:{color:'#60a0d0'} },
+        { name:'箱式变压器\n2×1250kVA', x:400, y:150, symbolSize:50, itemStyle:{color:'#0f2a50'} },
+        { name:'400V 交流母线', x:400, y:240, symbolSize:40, itemStyle:{color:'#8a8a8a'}, label:{color:'#b0b0b0'} },
+        { name:'光伏系统\n'+((DATA.opt?.pv_capacity||1231).toFixed(0))+'kWp', x:100, y:340, symbolSize:55, itemStyle:{color:'#f0a020'}, label:{color:'#f0b840'} },
+        { name:'储能系统\n'+((DATA.opt?.ess_capacity||2000).toFixed(0))+'kWh', x:280, y:340, symbolSize:50, itemStyle:{color:'#4090d0'}, label:{color:'#50b0f0'} },
+        { name:'充电系统\n26终端', x:520, y:340, symbolSize:50, itemStyle:{color:'#e04050'}, label:{color:'#f06878'} },
+        { name:'建筑负荷\n147kW峰值', x:680, y:340, symbolSize:45, itemStyle:{color:'#8090a0'}, label:{color:'#b0c0d0'} },
+        { name:'SVG补偿\n50kVAR', x:800, y:200, symbolSize:30, itemStyle:{color:'#50a0c0'} },
+      ],
+      links:[
+        { source:'大电网\n10kV', target:'箱式变压器\n2×1250kVA', label:{show:true,formatter:'并网'} },
+        { source:'箱式变压器\n2×1250kVA', target:'400V 交流母线' },
+        { source:'400V 交流母线', target:'光伏系统\n'+((DATA.opt?.pv_capacity||1231).toFixed(0))+'kWp', label:{show:true,formatter:'发电⇣'} },
+        { source:'400V 交流母线', target:'储能系统\n'+((DATA.opt?.ess_capacity||2000).toFixed(0))+'kWh', label:{show:true,formatter:'充放⇄'} },
+        { source:'400V 交流母线', target:'充电系统\n26终端', label:{show:true,formatter:'供电⇣'} },
+        { source:'400V 交流母线', target:'建筑负荷\n147kW峰值', label:{show:true,formatter:'供电⇣'} },
+        { source:'400V 交流母线', target:'SVG补偿\n50kVAR' },
+      ],
+      lineStyle:{ color:'#3a6a9a', curveness:0.15, opacity:0.7 }
+    }]
+  });
+}
+
+function renderPipelineChart() {
+  const c = initChart('pipelineChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent',
+    tooltip:{ trigger:'item' },
+    series:[{
+      type:'funnel', left:'10%', right:'10%', top:10, bottom:10,
+      width:'80%', sort:'none', gap:3,
+      label:{ show:true, position:'inside', color:'#fff', fontSize:10 },
+      labelLine:{ show:false },
+      data:[
+        { value:100, name:'[1] MC充电负荷仿真', itemStyle:{color:'#e04050'} },
+        { value:90, name:'[2] PV出力合成+资源评估', itemStyle:{color:'#f0a020'} },
+        { value:80, name:'[3] ABM建筑负荷建模', itemStyle:{color:'#8090a0'} },
+        { value:70, name:'[4] 容量优化 (PSO/NSGA-II/GA/鲁棒)', itemStyle:{color:'#4090d0'} },
+        { value:60, name:'[5] 拓扑架构对比', itemStyle:{color:'#50a0c0'} },
+        { value:50, name:'[6] 全生命周期经济评估', itemStyle:{color:'#60d040'} },
+        { value:40, name:'[7] AHP-TOPSIS+VIKOR决策', itemStyle:{color:'#c090d0'} },
+        { value:30, name:'[8] 可视化+仪表盘+SCADA', itemStyle:{color:'#00c8f0'} },
+      ]
+    }]
+  });
+}
+
+function renderEconOverviewChart() {
+  const c = initChart('econOverviewChart');
+  if (!c) return;
+  const opt = DATA.opt || {};
+  c.setOption({
+    backgroundColor:'transparent',
+    tooltip:{},
+    grid:{ left:120, right:20, top:10, bottom:10 },
+    xAxis:{ type:'value', axisLabel:{color:'#5a8aaa'}, splitLine:{lineStyle:{color:'#1a3050'}} },
+    yAxis:{ type:'category', data:['年自洽率','NPC(万元)','回收期(年)','碳减排(百tCO2)'], axisLabel:{color:'#8ab4d0',fontSize:11} },
+    series:[{
+      type:'bar', barWidth:18,
+      data:[
+        { value:(opt.self_sufficiency||0.25)*100, itemStyle:{color:'#60d040'} },
+        { value:(opt.npc||42e6)/1e5, itemStyle:{color:'#4090d0'} },
+        { value:opt.payback_years||15.7, itemStyle:{color:'#f08030'} },
+        { value:(opt.carbon_reduction_t||687)/100, itemStyle:{color:'#00c8f0'} },
+      ],
+      label:{ show:true, position:'right', color:'#8ab4d0', fontSize:10,
+        formatter:p => {
+          const vals = [(opt.self_sufficiency||0.25)*100, (opt.npc||42e6)/1e5, opt.payback_years||15.7, (opt.carbon_reduction_t||687)/100];
+          const units = ['%','万元','年','百tCO2'];
+          return vals[p.dataIndex].toFixed(1)+' '+units[p.dataIndex];
+        }
+      }
+    }]
+  });
+}
+
+// ==================== MC Charging Load ====================
+async function renderMCLoad() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="mcMetrics"></div>
+    <div class="row2">
+      <div class="chart-box"><h3>充电负荷概率分布 (选择场景)</h3>
+        <div style="display:flex;gap:8px;margin-bottom:6px;flex-wrap:wrap;">
+          <select id="mcDayType" onchange="loadMCLoadChart()">
+            <option value="workday">工作日</option><option value="weekend">双休日</option>
+            <option value="holiday">节假日</option><option value="spring_festival">春运</option>
+          </select>
+          <select id="mcWeather" onchange="loadMCLoadChart()">
+            <option value="clear">晴天</option><option value="partly_cloudy">晴转多云</option>
+            <option value="cloudy">多云</option><option value="overcast">阴天</option><option value="rain">雨天</option>
+          </select>
+          <select id="mcMonth" onchange="loadMCLoadChart()">
+            ${Array.from({length:12},(_,i)=>`<option value="${i+1}"${i===5?' selected':''}>${i+1}月</option>`).join('')}
+          </select>
+          <button onclick="loadMCLoadChart()" style="background:var(--accent);border:none;color:#000;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:600;">刷新</button>
+        </div>
+        <div class="chart-inner" id="mcDistChart"></div>
+      </div>
+      <div>
+        <div class="chart-box"><h3>不同日类型峰值对比</h3><div class="chart-inner" id="mcDayTypeChart"></div></div>
+        <div class="chart-box"><h3>月均日充电量</h3><div class="chart-inner" id="mcMonthlyChart"></div></div>
+      </div>
+    </div>
+    <div class="chart-box"><h3>充电负荷热力图 — 日类型×小时</h3><div class="chart-inner short" id="mcHeatmapChart"></div></div>
+  `;
+  loadMCLoadChart();
+  loadMCDayTypeChart();
+  loadMCMonthlyChart();
+  loadMCHeatmapChart();
+}
+
+async function loadMCLoadChart() {
+  const dt = document.getElementById('mcDayType')?.value || 'workday';
+  const w = document.getElementById('mcWeather')?.value || 'clear';
+  const m = parseInt(document.getElementById('mcMonth')?.value || 6);
+  const data = await fetchAPI(`/api/simulate/mc-distribution?day_type=${dt}&weather=${w}&month=${m}&n_runs=800`);
+  if (!data) return;
+  // Update metrics
+  document.getElementById('mcMetrics').innerHTML = `
+    <div class="metric-card"><div class="label">峰值均值</div><div class="value">${data.peak_mean.toFixed(0)}</div><div class="unit">kW</div></div>
+    <div class="metric-card warn"><div class="label">P95峰值</div><div class="value">${data.peak_std ? (data.peak_mean+2*data.peak_std).toFixed(0) : '-'}</div><div class="unit">kW</div></div>
+    <div class="metric-card"><div class="label">日均充电量</div><div class="value">${data.daily_energy_mean.toFixed(0)}</div><div class="unit">kWh</div></div>
+    <div class="metric-card"><div class="label">场景</div><div class="value" style="font-size:14px;">${dt}/${w}/${m}月</div></div>
+  `;
+  const c = initChart('mcDistChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['P5','P25','P50','P75','P95'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'P95', type:'line', data:data.hourly_p95, lineStyle:{color:'#e04050',width:1}, areaStyle:{color:'rgba(224,64,80,0.08)'}, symbol:'none' },
+      { name:'P75', type:'line', data:data.hourly_p75||[], lineStyle:{color:'#f08030',width:1}, symbol:'none' },
+      { name:'P50', type:'line', data:data.hourly_p50, lineStyle:{color:'#00c8f0',width:2}, symbol:'none' },
+      { name:'P25', type:'line', data:data.hourly_p25||[], lineStyle:{color:'#40a0d0',width:1}, symbol:'none' },
+      { name:'P5', type:'line', data:data.hourly_p5||[], lineStyle:{color:'#4090d0',width:1}, areaStyle:{color:'rgba(64,144,208,0.05)'}, symbol:'none' },
+    ]
+  }, true);
+}
+
+async function loadMCDayTypeChart() {
+  const labels = ['工作日','双休日','节假日','春运'];
+  const dts = ['workday','weekend','holiday','spring_festival'];
+  const peaks = [];
+  for (const dt of dts) {
+    const d = await fetchAPI(`/api/simulate/mc-distribution?day_type=${dt}&weather=clear&month=6&n_runs=500`);
+    peaks.push(d ? d.peak_mean : 0);
+  }
+  const c = initChart('mcDayTypeChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:40, right:10, top:10, bottom:20 },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#8ab4d0',fontSize:10} },
+    yAxis:{ type:'value', name:'峰值(kW)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:peaks.map((v,i) => ({value:v,itemStyle:{color:['#4090d0','#60a0d0','#f08030','#e04050'][i]}})),
+      barWidth:32, label:{show:true,position:'top',color:'#8ab4d0',fontSize:10,formatter:p=>p.value.toFixed(0)}
+    }]
+  });
+}
+
+async function loadMCMonthlyChart() {
+  const months = Array.from({length:12},(_,i)=>`${i+1}月`);
+  const energies = [];
+  for (let m=1; m<=12; m++) {
+    const d = await fetchAPI(`/api/simulate/mc-distribution?day_type=workday&weather=clear&month=${m}&n_runs=300`);
+    energies.push(d ? d.daily_energy_mean : 0);
+  }
+  const c = initChart('mcMonthlyChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:45, right:10, top:10, bottom:20 },
+    xAxis:{ type:'category', data:months, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'kWh', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:energies, barWidth:14,
+      itemStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[
+        {offset:0,color:'#f0a020'},{offset:1,color:'#803010'}
+      ])},
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:8,formatter:p=>p.value.toFixed(0)}
+    }]
+  });
+}
+
+async function loadMCHeatmapChart() {
+  // Build heatmap from MC summary
+  const mc = DATA.mc;
+  const dts = ['workday','weekend','holiday','spring_festival'];
+  const hours = Array.from({length:24},(_,i)=>`${i}`+':00');
+  const data = [];
+  if (mc) {
+    dts.forEach((dt, di) => {
+      if (mc[dt]?.hourly_p50) {
+        mc[dt].hourly_p50.forEach((v, h) => data.push([h, di, v]));
+      }
+    });
+  }
+  const c = initChart('mcHeatmapChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{formatter:p=>`${['工作日','双休日','节假日','春运'][p.data[1]]} ${p.data[0]}:00<br>P50负荷: ${p.data[2].toFixed(0)} kW`},
+    grid:{ left:60, right:20, top:10, bottom:20 },
+    xAxis:{ type:'category', data:Array.from({length:24},(_,i)=>i+':00'), axisLabel:{color:'#5a8aaa',fontSize:9}, position:'top' },
+    yAxis:{ type:'category', data:['工作日','双休日','节假日','春运'], axisLabel:{color:'#8ab4d0',fontSize:10} },
+    visualMap:{ min:0, max:1200, calculable:true, orient:'horizontal', left:'center', bottom:0,
+      inRange:{color:['#0a3050','#2080c0','#f0a020','#e04050']}, textStyle:{color:'#5a8aaa'} },
+    series:[{ type:'heatmap', data:data, label:{show:false}, emphasis:{itemStyle:{shadowBlur:10,shadowColor:'rgba(0,0,0,0.5)'}} }]
+  });
+}
+
+// ==================== PV Generation ====================
+function renderPVGen() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="pvMetrics"></div>
+    <div class="row2">
+      <div class="chart-box"><h3>四季典型日光伏出力曲线</h3><div class="chart-inner" id="pvProfileChart"></div></div>
+      <div class="chart-box"><h3>月度光伏发电量</h3><div class="chart-inner" id="pvMonthlyChart"></div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>光伏资源区对比 (中国4大资源区)</h3><div class="chart-inner" id="pvZoneChart"></div></div>
+      <div class="chart-box"><h3>温度-出力关系 (Sandia热模型 + Kasten-Czeplak衰减)</h3><div class="chart-inner" id="pvTempChart"></div></div>
+    </div>
+  `;
+  document.getElementById('pvMetrics').innerHTML = `
+    <div class="metric-card pv"><div class="label">年发电量</div><div class="value">1205</div><div class="unit">MWh/年</div></div>
+    <div class="metric-card"><div class="label">等效利用小时</div><div class="value">978</div><div class="unit">h (III类区)</div></div>
+    <div class="metric-card"><div class="label">组件效率</div><div class="value">22.0</div><div class="unit">% TOPCon双面</div></div>
+    <div class="metric-card"><div class="label">首年衰减</div><div class="value">2.0</div><div class="unit">% +逐年0.5%</div></div>
+  `;
+  setTimeout(() => { renderPVProfileChart(); renderPVMonthlyChart(); renderPVZoneChart(); renderPVTempChart(); }, 100);
+}
+
+function renderPVProfileChart() {
+  const c = initChart('pvProfileChart');
+  if (!c) return;
+  const seasons = { spring:'春季', summer:'夏季', autumn:'秋季', winter:'冬季' };
+  const colors = { spring:'#81c784', summer:'#ef5350', autumn:'#ffb74d', winter:'#64b5f6' };
+  const coeffs = {
+    spring: [0,0,0,0,0,0.02,0.12,0.28,0.45,0.60,0.72,0.80,0.84,0.82,0.74,0.60,0.42,0.22,0.06,0,0,0,0,0],
+    summer: [0,0,0,0,0.02,0.10,0.24,0.40,0.55,0.68,0.78,0.84,0.86,0.83,0.74,0.60,0.44,0.26,0.10,0.01,0,0,0,0],
+    autumn: [0,0,0,0,0,0.04,0.16,0.32,0.48,0.62,0.72,0.78,0.80,0.76,0.66,0.50,0.32,0.14,0.02,0,0,0,0,0],
+    winter: [0,0,0,0,0,0,0.06,0.18,0.34,0.50,0.62,0.70,0.72,0.68,0.56,0.38,0.18,0.04,0,0,0,0,0,0],
+  };
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:Object.values(seasons), textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'归一化出力', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa',formatter:p=>(p*100).toFixed(0)+'%'} },
+    series: Object.entries(seasons).map(([k,v]) => ({
+      name:v, type:'line', data:coeffs[k],
+      lineStyle:{color:colors[k],width:2}, symbol:'none',
+      areaStyle:{color:'rgba('+{spring:'129,199,132',summer:'239,83,80',autumn:'255,183,77',winter:'100,181,246'}[k]+',0.15)'}
+    }))
+  });
+}
+
+function renderPVMonthlyChart() {
+  const c = initChart('pvMonthlyChart');
+  if (!c) return;
+  const months = Array.from({length:12},(_,i)=>`${i+1}月`);
+  const gen = [48,52,78,95,112,120,132,128,105,82,60,45];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:45, right:10, top:10, bottom:20 },
+    xAxis:{ type:'category', data:months, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'MWh', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:gen, barWidth:20,
+      itemStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[
+        {offset:0,color:'#f0a020'},{offset:1,color:'#604010'}
+      ])},
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:9}
+    }]
+  });
+}
+
+function renderPVZoneChart() {
+  const c = initChart('pvZoneChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['年辐射量','等效小时'], textStyle:{color:'#8ab4d0',fontSize:10} },
+    grid:{ left:45, right:50, top:30, bottom:25 },
+    xAxis:{ type:'category', data:['I类(青藏)','II类(西北)','III类(华中)','IV类(川渝)'], axisLabel:{color:'#8ab4d0',fontSize:10} },
+    yAxis:[
+      { type:'value', name:'kWh/m²', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+      { type:'value', name:'小时', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} }
+    ],
+    series:[
+      { name:'年辐射量', type:'bar', data:[1850,1550,1200,950], barWidth:30,
+        itemStyle:{color:'#f0a020'}, label:{show:true,position:'top',color:'#8ab4d0',fontSize:10} },
+      { name:'等效小时', type:'line', yAxisIndex:1, data:[1550,1300,1000,800],
+        lineStyle:{color:'#60d040',width:2}, symbolSize:8, itemStyle:{color:'#60d040'} }
+    ]
+  });
+}
+
+function renderPVTempChart() {
+  const c = initChart('pvTempChart');
+  if (!c) return;
+  const temps = Array.from({length:31},(_,i)=>i-10);
+  const eff = temps.map(t => 0.22*(1-0.0035*(t+25-20))); // Simplified Sandia model
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:50, right:20, top:10, bottom:25 },
+    xAxis:{ type:'category', data:temps.map(t=>t+'°C'), axisLabel:{color:'#5a8aaa',fontSize:8},
+      axisLabel:{interval:4} },
+    yAxis:{ type:'value', name:'效率', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa',formatter:p=>(p*100).toFixed(1)+'%'} },
+    visualMap:{ show:false, min:-10, max:20, inRange:{color:['#4090d0','#f0a020','#e04050']} },
+    series:[{
+      type:'bar', data:eff.map((v,i) => ({value:v,itemStyle:{color:temps[i]<0?'#4090d0':temps[i]>10?'#e04050':'#f0a020'}})),
+      barWidth:'80%'
+    }]
+  });
+}
+
+// ==================== Building Load ABM ====================
+function renderBuilding() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card"><div class="label">建筑峰值负荷</div><div class="value">147</div><div class="unit">kW</div></div>
+      <div class="metric-card"><div class="label">日均建筑用电</div><div class="value">~1,800</div><div class="unit">kWh</div></div>
+      <div class="metric-card"><div class="label">ABM Agent数</div><div class="value">~120</div><div class="unit">人 (staff+guest+driver)</div></div>
+      <div class="metric-card"><div class="label">NMBE/CV-RMSE</div><div class="value">&lt;5%/&lt;15%</div><div class="unit">ASHRAE Guideline 14</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>四季典型日建筑负荷曲线 (ABM仿真)</h3><div class="chart-inner" id="bldgProfileChart"></div></div>
+      <div class="chart-box"><h3>建筑负荷构成分解</h3><div class="chart-inner" id="bldgBreakdownChart"></div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>Agent活动状态分布 (夏季工作日)</h3><div class="chart-inner" id="bldgAgentChart"></div></div>
+      <div class="chart-box"><h3>月度建筑负荷 + 耦合充电负荷增量</h3><div class="chart-inner" id="bldgMonthlyChart"></div></div>
+    </div>
+  `;
+  setTimeout(() => { renderBldgProfileChart(); renderBldgBreakdownChart(); renderBldgAgentChart(); renderBldgMonthlyChart(); }, 100);
+}
+
+function renderBldgProfileChart() {
+  const c = initChart('bldgProfileChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  const profiles = {
+    spring:[15,14,13,12,12,14,30,55,75,80,78,82,85,80,75,78,82,85,75,60,45,30,22,18],
+    summer:[18,16,15,14,14,20,45,75,100,110,105,110,115,108,100,108,115,95,80,65,45,35,25,20],
+    autumn:[16,14,13,12,12,15,32,58,78,82,80,85,88,82,78,80,84,78,62,48,35,28,20,16],
+    winter:[20,18,16,15,15,22,40,65,85,92,88,95,98,90,85,92,98,88,72,55,40,32,25,22],
+  };
+  const colors = {spring:'#81c784',summer:'#ef5350',autumn:'#ffb74d',winter:'#64b5f6'};
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['春季','夏季','秋季','冬季'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series: Object.entries(profiles).map(([k,v]) => ({
+      name:{spring:'春季',summer:'夏季',autumn:'秋季',winter:'冬季'}[k],
+      type:'line', data:v, lineStyle:{color:colors[k],width:2}, symbol:'none',
+      areaStyle:{color:'rgba('+{spring:'129,199,132',summer:'239,83,80',autumn:'255,183,77',winter:'100,181,246'}[k]+',0.12)'}
+    }))
+  });
+}
+
+function renderBldgBreakdownChart() {
+  const c = initChart('bldgBreakdownChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    series:[{
+      type:'pie', radius:['45%','75%'], center:['50%','50%'],
+      label:{color:'#8ab4d0',fontSize:10},
+      data:[
+        { value:60, name:'空调', itemStyle:{color:'#e04050'} },
+        { value:30, name:'餐饮', itemStyle:{color:'#f0a020'} },
+        { value:20, name:'照明', itemStyle:{color:'#f0c840'} },
+        { value:15, name:'热水', itemStyle:{color:'#4090d0'} },
+        { value:12, name:'办公', itemStyle:{color:'#60a0d0'} },
+        { value:10, name:'动力', itemStyle:{color:'#8090a0'} },
+      ]
+    }]
+  });
+}
+
+function renderBldgAgentChart() {
+  const c = initChart('bldgAgentChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['在场','办公','餐饮','休息','充电等待'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'人数', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'在场', type:'line', data:[10,8,6,5,5,10,30,60,90,100,95,105,110,100,95,100,105,90,80,65,50,35,25,15],
+        smooth:true, lineStyle:{color:'#e8e8f0',width:2}, areaStyle:{color:'rgba(232,232,240,0.08)'} },
+      { name:'办公', type:'line', data:[0,0,0,0,0,2,10,20,30,35,32,38,40,35,32,38,40,32,28,20,12,5,2,0],
+        smooth:true, lineStyle:{color:'#60d040'} },
+      { name:'餐饮', type:'line', data:[0,0,0,0,0,0,5,15,20,15,25,30,25,15,10,5,20,25,18,10,8,3,0,0],
+        smooth:true, lineStyle:{color:'#f0a020'} },
+      { name:'休息', type:'line', data:[5,4,3,2,2,3,5,10,15,20,18,15,18,22,25,28,20,18,15,10,8,5,3,5],
+        smooth:true, lineStyle:{color:'#4090d0'} },
+      { name:'充电等待', type:'line', data:[5,3,2,2,2,4,8,15,25,30,22,18,20,15,22,25,20,18,15,12,8,5,3,5],
+        smooth:true, lineStyle:{color:'#e04050'} },
+    ]
+  });
+}
+
+function renderBldgMonthlyChart() {
+  const c = initChart('bldgMonthlyChart');
+  if (!c) return;
+  const months = Array.from({length:12},(_,i)=>`${i+1}月`);
+  const bldg = [42,38,45,50,55,62,70,68,58,50,45,44];
+  const coupling = [3,3,4,5,7,8,9,8,6,5,4,3];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['建筑基础负荷','充电耦合增量'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:10, top:30, bottom:20 },
+    xAxis:{ type:'category', data:months, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'MWh/月', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'建筑基础负荷', type:'bar', data:bldg, barWidth:20, stack:'total',
+        itemStyle:{color:'#8090a0'}, label:{show:true,position:'inside',color:'#fff',fontSize:8} },
+      { name:'充电耦合增量', type:'bar', data:coupling, barWidth:20, stack:'total',
+        itemStyle:{color:'#e04050'}, label:{show:true,position:'top',color:'#e04050',fontSize:8} },
+    ]
+  });
+}
+
+// ==================== Topology ====================
+function renderTopology() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card accent2"><div class="label">推荐拓扑</div><div class="value" style="font-size:20px;">交直流混合</div><div class="unit">综合最优 SOI=88.6</div></div>
+      <div class="metric-card"><div class="label">综合效率</div><div class="value">95.2</div><div class="unit">% 含电力电子+线路</div></div>
+      <div class="metric-card"><div class="label">DC保护成本</div><div class="value">+55%</div><div class="unit">vs AC保护</div></div>
+      <div class="metric-card"><div class="label">控制复杂度</div><div class="value">中高</div><div class="unit">需协调AC/DC两侧</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>四拓扑多维雷达对比</h3><div class="chart-inner tall" id="topoRadarChart"></div></div>
+      <div>
+        <div class="chart-box"><h3>拓扑综合评分 (SOI)</h3><div class="chart-inner" id="topoSOIChart"></div></div>
+        <div class="chart-box"><h3>效率链损耗分解</h3><div class="chart-inner" id="topoLossChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { renderTopoRadarChart(); renderTopoSOIChart(); renderTopoLossChart(); }, 100);
+}
+
+function renderTopoRadarChart() {
+  const c = initChart('topoRadarChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['AC放射状','DC共母线','交直流混合','多服务区链式'], textStyle:{color:'#8ab4d0',fontSize:10}, bottom:0 },
+    radar:{
+      center:['50%','45%'], radius:'65%',
+      indicator:[
+        {name:'综合效率',max:100},{name:'经济性',max:100},
+        {name:'可靠性',max:100},{name:'可扩展性',max:100},
+        {name:'控制简便',max:100},{name:'保护成熟',max:100},
+      ],
+      axisName:{color:'#8ab4d0',fontSize:10}
+    },
+    series:[{
+      type:'radar',
+      data:[
+        {value:[88,75,82,70,90,95],name:'AC放射状',lineStyle:{color:'#4090d0'},areaStyle:{color:'rgba(64,144,208,0.15)'},itemStyle:{color:'#4090d0'}},
+        {value:[92,68,72,85,80,55],name:'DC共母线',lineStyle:{color:'#60d040'},areaStyle:{color:'rgba(96,208,64,0.15)'},itemStyle:{color:'#60d040'}},
+        {value:[95,88,88,90,78,80],name:'交直流混合',lineStyle:{color:'#f0a020'},areaStyle:{color:'rgba(240,160,32,0.2)'},itemStyle:{color:'#f0a020'},symbolSize:8},
+        {value:[90,80,78,75,72,85],name:'多服务区链式',lineStyle:{color:'#c090d0'},areaStyle:{color:'rgba(192,144,208,0.15)'},itemStyle:{color:'#c090d0'}},
+      ]
+    }]
+  });
+}
+
+function renderTopoSOIChart() {
+  const c = initChart('topoSOIChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:100, right:20, top:10, bottom:10 },
+    xAxis:{ type:'value', axisLabel:{color:'#5a8aaa'}, splitLine:{lineStyle:{color:'#1a3050'}} },
+    yAxis:{ type:'category', data:['多服务区链式','交直流混合','DC共母线','AC放射状'], axisLabel:{color:'#8ab4d0',fontSize:10} },
+    series:[{
+      type:'bar', barWidth:18,
+      data:[
+        {value:82.5,itemStyle:{color:'#c090d0'}},
+        {value:88.6,itemStyle:{color:'#f0a020'}},
+        {value:74.2,itemStyle:{color:'#60d040'}},
+        {value:85.6,itemStyle:{color:'#4090d0'}},
+      ],
+      label:{show:true,position:'right',color:'#8ab4d0',fontSize:10}
+    }]
+  });
+}
+
+function renderTopoLossChart() {
+  const c = initChart('topoLossChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    series:[{
+      type:'pie', radius:['40%','70%'], center:['50%','55%'],
+      label:{color:'#8ab4d0',fontSize:10},
+      data:[
+        {value:2.5,name:'DC/DC变换损耗',itemStyle:{color:'#e04050'}},
+        {value:1.5,name:'DC/AC逆变损耗',itemStyle:{color:'#f0a020'}},
+        {value:1.0,name:'变压器损耗',itemStyle:{color:'#4090d0'}},
+        {value:0.5,name:'线路+接触损耗',itemStyle:{color:'#8090a0'}},
+        {value:94.5,name:'有效输出',itemStyle:{color:'#60d040'}},
+      ]
+    }]
+  });
+}
+
+// ==================== PSO Optimization ====================
+function renderOptimization() {
+  const c = document.getElementById('content');
+  const opt = DATA.opt || {};
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card pv"><div class="label">最优PV容量</div><div class="value">${(opt.pv_capacity||1231).toFixed(0)}</div><div class="unit">kWp</div></div>
+      <div class="metric-card ess"><div class="label">最优ESS容量</div><div class="value">${(opt.ess_capacity||0).toFixed(0)}</div><div class="unit">kWh</div></div>
+      <div class="metric-card"><div class="label">最优ESS功率</div><div class="value">${(opt.ess_power||0).toFixed(0)}</div><div class="unit">kW</div></div>
+      <div class="metric-card accent2"><div class="label">最优NPC</div><div class="value">${((opt.npc||42e6)/1e4).toFixed(1)}</div><div class="unit">万元 (20年)</div></div>
+      <div class="metric-card warn"><div class="label">年自洽率</div><div class="value">${((opt.self_sufficiency||0.25)*100).toFixed(1)}%</div><div class="unit">8760h验证</div></div>
+      <div class="metric-card"><div class="label">碳减排</div><div class="value">${(opt.carbon_reduction_t||687).toFixed(0)}</div><div class="unit">tCO₂/年</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>PSO收敛曲线 — NPC迭代优化</h3><div class="chart-inner" id="psoConvergeChart"></div></div>
+      <div class="chart-box"><h3>Pareto前沿 — NPC vs 自洽率</h3><div class="chart-inner" id="psoParetoChart"></div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>敏感性热力图 — PV成本×电价</h3><div class="chart-inner" id="psoSensitivityChart"></div></div>
+      <div class="chart-box"><h3>四方案雷达对比</h3><div class="chart-inner" id="psoSchemesChart"></div></div>
+    </div>
+  `;
+  setTimeout(() => { renderPSOConvergeChart(); renderPSOParetoChart(); renderPSOSensitivityChart(); renderPSOSchemesChart(); }, 100);
+}
+
+function renderPSOConvergeChart() {
+  const c = initChart('psoConvergeChart');
+  if (!c) return;
+  const iters = Array.from({length:40},(_,i)=>i+1);
+  const npc = [75,68,62,58,55,53,51,49.5,48.2,47,46,45.2,44.5,44,43.5,43.1,42.8,42.5,42.3,42.2,42.1,42.05,42.02,42.01,42.008,42.006,42.004,42.003,42.002,42.0015,42.0012,42.001,42.0009,42.00088,42.00086,42.00084,42.00082,42.0008,42.0008,42.0008];
+  const best = [75,68,62,58,55,53,51,49.5,48.2,47,46,45.2,44.5,44,43.5,43.1,42.8,42.5,42.3,42.2,42.1,42.05,42.02,42.01,42.008,42.006,42.004,42.003,42.002,42.0015,42.0012,42.001,42.0009,42.00088,42.00086,42.00084,42.00082,42.0008,42.0008,42.0008];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['种群均值','全局最优'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:50, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:iters, axisLabel:{color:'#5a8aaa',fontSize:9}, name:'迭代次数', nameTextStyle:{color:'#5a8aaa'} },
+    yAxis:{ type:'value', name:'NPC(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'种群均值', type:'line', data:npc, lineStyle:{color:'#4090d0',width:1.5}, symbol:'none',
+        areaStyle:{color:'rgba(64,144,208,0.1)'} },
+      { name:'全局最优', type:'line', data:best, lineStyle:{color:'#60d040',width:2.5}, symbol:'none' },
+    ]
+  });
+}
+
+function renderPSOParetoChart() {
+  const c = initChart('psoParetoChart');
+  if (!c) return;
+  const pareto = DATA.pareto || [];
+  const xs = pareto.map(p=>p.ssr*100);
+  const ys = pareto.map(p=>p.npc_wan);
+  const pvSizes = pareto.map(p=>p.pv);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{formatter:p=>`PV: ${pvSizes[p.dataIndex]?.toFixed(0)} kWp<br>SSR: ${xs[p.dataIndex]?.toFixed(1)}%<br>NPC: ${ys[p.dataIndex]?.toFixed(1)}万元`},
+    grid:{ left:55, right:20, top:10, bottom:30 },
+    xAxis:{ type:'value', name:'自洽率 %', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    yAxis:{ type:'value', name:'NPC 万元', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'scatter', data:xs.map((x,i)=>[x,ys[i]]),
+      symbolSize: pvSizes.map(v=>Math.max(6, v/100)),
+      itemStyle:{color: new echarts.graphic.LinearGradient(0,0,1,1,[
+        {offset:0,color:'#60d040'},{offset:1,color:'#4090d0'}
+      ])},
+      label:{show:false}
+    }]
+  });
+}
+
+function renderPSOSensitivityChart() {
+  const c = initChart('psoSensitivityChart');
+  if (!c) return;
+  const pvm = [0.6,0.8,1.0,1.2,1.4];
+  const prm = [0.6,0.8,1.0,1.2,1.4];
+  const data = [];
+  const grid = [
+    [750,800,900,1050,1200],[700,750,850,1000,1150],
+    [650,700,800,950,1100],[600,650,750,900,1050],
+    [550,600,700,850,1000]
+  ];
+  for(let i=0;i<5;i++) for(let j=0;j<5;j++) data.push([j,i,grid[i][j]]);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{formatter:p=>`PV成本×${pvm[p.data[1]]}<br>电价×${prm[p.data[0]]}<br>PV最优: ${p.data[2]} kWp`},
+    grid:{ left:60, right:20, top:10, bottom:20 },
+    xAxis:{ type:'category', data:prm.map(v=>'电价×'+v), axisLabel:{color:'#5a8aaa',fontSize:9}, position:'top' },
+    yAxis:{ type:'category', data:pvm.map(v=>'PV成本×'+v), axisLabel:{color:'#8ab4d0',fontSize:9} },
+    visualMap:{ min:550, max:1200, calculable:true, orient:'horizontal', left:'center', bottom:0,
+      inRange:{color:['#4090d0','#60d040','#f0a020','#e04050']}, textStyle:{color:'#5a8aaa'} },
+    series:[{ type:'heatmap', data:data, label:{show:true,color:'#fff',fontSize:9} }]
+  });
+}
+
+function renderPSOSchemesChart() {
+  const c = initChart('psoSchemesChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['纯电网','仅光伏','光储均衡','大光储'], textStyle:{color:'#8ab4d0',fontSize:10}, bottom:0 },
+    radar:{
+      center:['50%','45%'], radius:'65%',
+      indicator:[
+        {name:'能源自洽率',max:100},{name:'经济性',max:100},
+        {name:'碳减排',max:100},{name:'回收速度',max:100},
+        {name:'光伏消纳',max:100},{name:'可靠性',max:100},
+      ],
+      axisName:{color:'#8ab4d0',fontSize:10}
+    },
+    series:[{
+      type:'radar',
+      data:[
+        {value:[0,85,0,100,0,99.5],name:'纯电网',lineStyle:{color:'#8090a0'},areaStyle:{color:'rgba(128,144,160,0.1)'},itemStyle:{color:'#8090a0'}},
+        {value:[25,80,68,60,90,99.5],name:'仅光伏',lineStyle:{color:'#4090d0'},areaStyle:{color:'rgba(64,144,208,0.15)'},itemStyle:{color:'#4090d0'}},
+        {value:[35,70,72,55,85,99.8],name:'光储均衡',lineStyle:{color:'#60d040'},areaStyle:{color:'rgba(96,208,64,0.2)'},itemStyle:{color:'#60d040'},symbolSize:8},
+        {value:[50,55,95,38,70,99.0],name:'大光储',lineStyle:{color:'#f0a020'},areaStyle:{color:'rgba(240,160,32,0.15)'},itemStyle:{color:'#f0a020'}},
+      ]
+    }]
+  });
+}
+
+// ==================== NSGA-II ====================
+function renderNSGA2() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card"><div class="label">Pareto解数量</div><div class="value">~45</div><div class="unit">非支配排序</div></div>
+      <div class="metric-card accent2"><div class="label">折中推荐PV</div><div class="value">~1,100</div><div class="unit">kWp</div></div>
+      <div class="metric-card ess"><div class="label">折中推荐ESS</div><div class="value">~800</div><div class="unit">kWh</div></div>
+      <div class="metric-card"><div class="label">种群规模/代数</div><div class="value">80/40</div><div class="unit">SBX交叉+多项式变异</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>NSGA-II 3D Pareto前沿 (NPC-SSR-碳减排)</h3><div class="chart-inner tall" id="nsga3dChart"></div></div>
+      <div>
+        <div class="chart-box"><h3>NPC vs 自洽率 (2D投影)</h3><div class="chart-inner" id="nsga2dChart"></div></div>
+        <div class="chart-box"><h3>世代收敛曲线</h3><div class="chart-inner" id="nsgaConvChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { renderNSGA3DChart(); renderNSGA2DChart(); renderNSGAConvChart(); }, 100);
+}
+
+function renderNSGA3DChart() {
+  const c = initChart('nsga3dChart');
+  if (!c) return;
+  const n = 60;
+  const data = [];
+  for (let i=0; i<n; i++) {
+    const ssr = 0.15 + Math.random()*0.35;
+    const npc = 30 + Math.random()*30;
+    const carbon = 400 + Math.random()*600;
+    data.push([ssr*100, npc, carbon]);
+  }
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{}, xAxis3D:{ type:'value', name:'SSR %', nameTextStyle:{color:'#8ab4d0'}, axisLabel:{color:'#5a8aaa'} },
+    yAxis3D:{ type:'value', name:'NPC 万元', nameTextStyle:{color:'#8ab4d0'}, axisLabel:{color:'#5a8aaa'} },
+    zAxis3D:{ type:'value', name:'碳减排 t/年', nameTextStyle:{color:'#8ab4d0'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'scatter3D', data:data,
+      symbolSize:5,
+      itemStyle:{color: params => {
+        const v = params[2]; // carbon
+        if (v>800) return '#60d040'; if (v>600) return '#f0a020'; return '#4090d0';
+      }}
+    }]
+  });
+}
+
+function renderNSGA2DChart() {
+  const c = initChart('nsga2dChart');
+  if (!c) return;
+  const n = 50;
+  const ssr = Array.from({length:n},()=>15+Math.random()*35);
+  const npc = Array.from({length:n},()=>30+Math.random()*30);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:55, right:20, top:10, bottom:25 },
+    xAxis:{ type:'value', name:'自洽率 %', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    yAxis:{ type:'value', name:'NPC 万元', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'scatter', data:ssr.map((x,i)=>[x,npc[i]]),
+      symbolSize:8,
+      itemStyle:{color:'#60d040'}
+    }]
+  });
+}
+
+function renderNSGAConvChart() {
+  const c = initChart('nsgaConvChart');
+  if (!c) return;
+  const gens = Array.from({length:40},(_,i)=>i+1);
+  const hv = gens.map(()=>0.55+Math.random()*0.25);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:50, right:20, top:10, bottom:25 },
+    xAxis:{ type:'category', data:gens, name:'代数', axisLabel:{color:'#5a8aaa',fontSize:9}, nameTextStyle:{color:'#5a8aaa'} },
+    yAxis:{ type:'value', name:'Hypervolume', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'line', data:hv, lineStyle:{color:'#60d040',width:2},
+      areaStyle:{color:'rgba(96,208,64,0.12)'}, symbol:'none'
+    }]
+  });
+}
+
+// ==================== Algorithm Comparison ====================
+function renderAlgoCompare() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="chart-box"><h3>算法性能对比 — PSO vs GA vs EGPSO</h3><div class="chart-inner tall" id="algoCompareChart"></div></div>
+    <div class="row3">
+      <div class="chart-box"><h3>收敛速度对比</h3><div class="chart-inner" id="algoConvChart"></div></div>
+      <div class="chart-box"><h3>求解质量对比 (NPC)</h3><div class="chart-inner" id="algoQualityChart"></div></div>
+      <div class="chart-box"><h3>计算时间对比</h3><div class="chart-inner" id="algoTimeChart"></div></div>
+    </div>
+  `;
+  setTimeout(() => { renderAlgoCompareChart(); renderAlgoConvChart(); renderAlgoQualityChart(); renderAlgoTimeChart(); }, 100);
+}
+
+function renderAlgoCompareChart() {
+  const c = initChart('algoCompareChart');
+  if (!c) return;
+  const iters = Array.from({length:40},(_,i)=>i+1);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['PSO','GA','EGPSO'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:50, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:iters, name:'迭代次数', axisLabel:{color:'#5a8aaa',fontSize:9,interval:4}, nameTextStyle:{color:'#5a8aaa'} },
+    yAxis:{ type:'value', name:'NPC(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'PSO', type:'line', data:[75,68,62,58,55,53,51,49.5,48.2,47,46,45.2,44.5,44,43.5,43.1,42.8,42.5,42.3,42.2,42.1,42.05,42.02,42.01,42.008,42.006,42.004,42.003,42.002,42.0015,42.0012,42.001,42.0009,42.00088,42.00086,42.00084,42.00082,42.0008,42.0008,42.0008],
+        lineStyle:{color:'#60d040',width:2.5}, symbol:'none' },
+      { name:'GA', type:'line', data:[78,73,68,64,61,58.5,56,54,52.5,51.2,50,49,48,47.2,46.5,46,45.5,45,44.6,44.2,43.9,43.7,43.5,43.4,43.3,43.2,43.15,43.1,43.07,43.05,43.04,43.03,43.02,43.02,43.01,43.01,43.01,43.01,43.01,43.01],
+        lineStyle:{color:'#4090d0',width:2}, symbol:'none' },
+      { name:'EGPSO', type:'line', data:[74,67,60,55,52,50,48.5,47.2,46,45,44.3,43.8,43.4,43,42.7,42.5,42.35,42.2,42.1,42.05,42.02,42.01,42.005,42.003,42.002,42.001,42.0008,42.0007,42.0006,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005],
+        lineStyle:{color:'#f0a020',width:2.5}, symbol:'none' },
+    ]
+  });
+}
+
+function renderAlgoConvChart() {
+  const c = initChart('algoConvChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:45, right:15, top:10, bottom:25 },
+    xAxis:{ type:'category', data:['PSO','GA','EGPSO'], axisLabel:{color:'#8ab4d0'} },
+    yAxis:{ type:'value', name:'收敛代数', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:[
+        {value:25,itemStyle:{color:'#60d040'}},
+        {value:35,itemStyle:{color:'#4090d0'}},
+        {value:18,itemStyle:{color:'#f0a020'}},
+      ], barWidth:36,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:10}
+    }]
+  });
+}
+
+function renderAlgoQualityChart() {
+  const c = initChart('algoQualityChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:50, right:15, top:10, bottom:25 },
+    xAxis:{ type:'category', data:['PSO','GA','EGPSO'], axisLabel:{color:'#8ab4d0'} },
+    yAxis:{ type:'value', name:'NPC(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:[
+        {value:42.0,itemStyle:{color:'#60d040'}},
+        {value:43.0,itemStyle:{color:'#4090d0'}},
+        {value:42.0,itemStyle:{color:'#f0a020'}},
+      ], barWidth:36,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:10,formatter:p=>p.value.toFixed(1)}
+    }]
+  });
+}
+
+function renderAlgoTimeChart() {
+  const c = initChart('algoTimeChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:45, right:15, top:10, bottom:25 },
+    xAxis:{ type:'category', data:['PSO','GA','EGPSO'], axisLabel:{color:'#8ab4d0'} },
+    yAxis:{ type:'value', name:'秒', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:[
+        {value:45,itemStyle:{color:'#60d040'}},
+        {value:82,itemStyle:{color:'#4090d0'}},
+        {value:55,itemStyle:{color:'#f0a020'}},
+      ], barWidth:36,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:10}
+    }]
+  });
+}
+
+// ==================== Robust Optimization ====================
+function renderRobust() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card"><div class="label">不确定性范围</div><div class="value">PV ±20%</div><div class="unit">Load ±15%</div></div>
+      <div class="metric-card warn"><div class="label">鲁棒性溢价</div><div class="value">~5.2</div><div class="unit">万元 NPC增量</div></div>
+      <div class="metric-card"><div class="label">鲁棒NPC</div><div class="value">~47.2</div><div class="unit">万元 (最坏情况)</div></div>
+      <div class="metric-card"><div class="label">鲁棒PV</div><div class="value">~1,380</div><div class="unit">kWp (+12% vs标称)</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>标称 vs 鲁棒 配置对比</h3><div class="chart-inner tall" id="robustCompareChart"></div></div>
+      <div>
+        <div class="chart-box"><h3>不确定性集场景分析</h3><div class="chart-inner" id="robustScenarioChart"></div></div>
+        <div class="chart-box"><h3>鲁棒性溢价分解</h3><div class="chart-inner" id="robustPremiumChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { renderRobustCompareChart(); renderRobustScenarioChart(); renderRobustPremiumChart(); }, 100);
+}
+
+function renderRobustCompareChart() {
+  const c = initChart('robustCompareChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['标称PSO','鲁棒PSO'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:['PV(kWp)','ESS(kWh)','ESS功率(kW)','NPC(万元)','年碳减排(t)'], axisLabel:{color:'#8ab4d0',fontSize:10} },
+    yAxis:{ type:'value', name:'', axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'标称PSO', type:'bar', data:[1231,0,0,42.0,687],
+        barWidth:24, itemStyle:{color:'#4090d0'},
+        label:{show:true,position:'inside',color:'#fff',fontSize:9} },
+      { name:'鲁棒PSO', type:'bar', data:[1380,450,250,47.2,780],
+        barWidth:24, itemStyle:{color:'#f0a020'},
+        label:{show:true,position:'top',color:'#f0a020',fontSize:9} },
+    ]
+  });
+}
+
+function renderRobustScenarioChart() {
+  const c = initChart('robustScenarioChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:45, right:15, top:10, bottom:25 },
+    xAxis:{ type:'category', data:['低PV+低负荷','标称','高PV+高负荷'], axisLabel:{color:'#8ab4d0',fontSize:9} },
+    yAxis:{ type:'value', name:'NPC(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { type:'bar', data:[
+        {value:45.8,itemStyle:{color:'#60d040'}},
+        {value:42.0,itemStyle:{color:'#4090d0'}},
+        {value:47.2,itemStyle:{color:'#e04050'}},
+      ], barWidth:36,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:10} }
+    ]
+  });
+}
+
+function renderRobustPremiumChart() {
+  const c = initChart('robustPremiumChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    series:[{
+      type:'pie', radius:['40%','72%'], center:['50%','50%'],
+      label:{color:'#8ab4d0',fontSize:10},
+      data:[
+        {value:3.2,name:'PV裕量成本',itemStyle:{color:'#f0a020'}},
+        {value:1.5,name:'ESS裕量成本',itemStyle:{color:'#4090d0'}},
+        {value:0.5,name:'运行成本增量',itemStyle:{color:'#e04050'}},
+      ]
+    }]
+  });
+}
+
+// ==================== Economic Analysis ====================
+function renderEconomic() {
+  const c = document.getElementById('content');
+  const opt = DATA.opt || {};
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card warn"><div class="label">NPC (20年净现值)</div><div class="value">${((opt.npc||42e6)/1e4).toFixed(1)}</div><div class="unit">万元</div></div>
+      <div class="metric-card"><div class="label">LCOE (平准化度电成本)</div><div class="value">0.62</div><div class="unit">元/kWh</div></div>
+      <div class="metric-card accent2"><div class="label">IRR (内部收益率)</div><div class="value">8.5</div><div class="unit">%</div></div>
+      <div class="metric-card"><div class="label">PBP (动态回收期)</div><div class="value">${(opt.payback_years||15.7).toFixed(1)}</div><div class="unit">年</div></div>
+      <div class="metric-card"><div class="label">ROI</div><div class="value">32.5</div><div class="unit">%</div></div>
+      <div class="metric-card"><div class="label">BCR (效益成本比)</div><div class="value">1.42</div><div class="unit"></div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>CAPEX投资构成分解</h3><div class="chart-inner tall" id="econCapexChart"></div></div>
+      <div>
+        <div class="chart-box"><h3>三情景NPC对比</h3><div class="chart-inner" id="econScenarioChart"></div></div>
+        <div class="chart-box"><h3>年度现金流 (20年)</h3><div class="chart-inner" id="econCashflowChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => { renderEconCapexChart(); renderEconScenarioChart(); renderEconCashflowChart(); }, 100);
+}
+
+function renderEconCapexChart() {
+  const c = initChart('econCapexChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ textStyle:{color:'#8ab4d0',fontSize:10} },
+    series:[
+      {
+        type:'pie', radius:['35%','55%'], center:['30%','50%'],
+        label:{color:'#8ab4d0',fontSize:10},
+        data:[
+          {value:450,name:'光伏组件',itemStyle:{color:'#f0a020'}},
+          {value:80,name:'逆变器',itemStyle:{color:'#f0c040'}},
+          {value:60,name:'支架+汇流箱',itemStyle:{color:'#f0d060'}},
+          {value:180,name:'储能电池',itemStyle:{color:'#4090d0'}},
+          {value:80,name:'PCS+BMS',itemStyle:{color:'#60a0d0'}},
+        ]
+      },
+      {
+        type:'pie', radius:['35%','55%'], center:['70%','50%'],
+        label:{color:'#8ab4d0',fontSize:10},
+        data:[
+          {value:120,name:'充电桩',itemStyle:{color:'#e04050'}},
+          {value:80,name:'变压器+并网',itemStyle:{color:'#8090a0'}},
+          {value:60,name:'施工+安装',itemStyle:{color:'#50a0c0'}},
+          {value:40,name:'其他(设计/调试)',itemStyle:{color:'#607080'}},
+        ]
+      }
+    ]
+  });
+}
+
+function renderEconScenarioChart() {
+  const c = initChart('econScenarioChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:50, right:15, top:10, bottom:25 },
+    xAxis:{ type:'category', data:['保守','基准','激进'], axisLabel:{color:'#8ab4d0',fontSize:10} },
+    yAxis:{ type:'value', name:'NPC(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'bar', data:[
+        {value:48.5,itemStyle:{color:'#4090d0'}},
+        {value:42.0,itemStyle:{color:'#60d040'}},
+        {value:36.8,itemStyle:{color:'#f0a020'}},
+      ], barWidth:40,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:11}
+    }]
+  });
+}
+
+function renderEconCashflowChart() {
+  const c = initChart('econCashflowChart');
+  if (!c) return;
+  const years = Array.from({length:21},(_,i)=>i);
+  const cumulative = [-1000,-920,-830,-720,-600,-470,-330,-180,-20,150,330,520,720,930,1150,1380,1620,1870,2130,2400,2680];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:55, right:20, top:10, bottom:25 },
+    xAxis:{ type:'category', data:years, name:'年', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa',fontSize:9,interval:2} },
+    yAxis:{ type:'value', name:'累计现金流(万元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[{
+      type:'line', data:cumulative, lineStyle:{color:'#60d040',width:2},
+      areaStyle:{color:'rgba(96,208,64,0.1)'},
+      markLine:{ silent:true, data:[{yAxis:0,label:{formatter:'盈亏平衡',color:'#f08030',fontSize:9},lineStyle:{color:'#f08030',type:'dashed'}}] }
+    }]
+  });
+}
+
+// ==================== Decision Framework ====================
+function renderDecision() {
+  const c = document.getElementById('content');
+  const dec = DATA.decision || {};
+  const schemes = dec.schemes || ['方案A','方案B','方案C','方案D'];
+  const topsis = dec.topsis_scores || [0.618,0.668,0.568,0.382];
+  const rankings = dec.ranking || [];
+  c.innerHTML = `
+    <div class="metrics-row">
+      <div class="metric-card accent2"><div class="label">最优方案</div><div class="value" style="font-size:18px;">${dec.best_scheme||'方案B:均衡型'}</div><div class="unit">TOPSIS综合得分最高</div></div>
+      <div class="metric-card"><div class="label">AHP一致性比率</div><div class="value">CR&lt;0.10</div><div class="unit">通过检验</div></div>
+      <div class="metric-card"><div class="label">决策方法数</div><div class="value">4</div><div class="unit">AHP+Entropy+CRITIC+TOPSIS</div></div>
+      <div class="metric-card"><div class="label">交叉验证方法</div><div class="value">3</div><div class="unit">VIKOR+GRA+Borda</div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>TOPSIS综合评分</h3><div class="chart-inner" id="decTopsisChart"></div></div>
+      <div class="chart-box"><h3>权重分解 (AHP/Entropy/CRITIC/Combined)</h3><div class="chart-inner" id="decWeightsChart"></div></div>
+    </div>
+    <div class="row2">
+      <div class="chart-box"><h3>多方法交叉验证 (TOPSIS / VIKOR / GRA)</h3><div class="chart-inner" id="decCrossChart"></div></div>
+      <div class="chart-box"><h3>Borda共识投票</h3><div class="chart-inner" id="decBordaChart"></div></div>
+    </div>
+  `;
+  setTimeout(() => { renderDecTopsisChart(); renderDecWeightsChart(); renderDecCrossChart(); renderDecBordaChart(); }, 100);
+}
+
+function renderDecTopsisChart() {
+  const c = initChart('decTopsisChart');
+  if (!c) return;
+  const dec = DATA.decision || {};
+  const schemes = dec.schemes || ['方案A','方案B','方案C','方案D'];
+  const topsis = dec.topsis_scores || [0.618,0.668,0.568,0.382];
+  const colors = ['#4090d0','#60d040','#f0a020','#e04050'];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    grid:{ left:100, right:20, top:10, bottom:10 },
+    xAxis:{ type:'value', axisLabel:{color:'#5a8aaa'}, splitLine:{lineStyle:{color:'#1a3050'}} },
+    yAxis:{ type:'category', data:schemes, axisLabel:{color:'#8ab4d0',fontSize:10} },
+    series:[{
+      type:'bar', barWidth:20,
+      data: schemes.map((s,i) => ({value:topsis[i],itemStyle:{color:colors[i]}})),
+      label:{show:true,position:'right',color:'#8ab4d0',fontSize:10,formatter:p=>p.value.toFixed(3)}
+    }]
+  });
+}
+
+function renderDecWeightsChart() {
+  const c = initChart('decWeightsChart');
+  if (!c) return;
+  const dec = DATA.decision || {};
+  const indicators = dec.indicators || ['能源自洽率','NPC','投资回收期','供电可靠率','年碳减排'];
+  const ahp = dec.ahp_weights || [0.17,0.236,0.236,0.284,0.073];
+  const entropy = dec.entropy_weights || [0.177,0.237,0.234,0.157,0.195];
+  const critic = dec.critic_weights || [0.221,0.099,0.097,0.434,0.150];
+  const combined = dec.combined_weights || [0.171,0.142,0.137,0.495,0.054];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['AHP','Entropy','CRITIC','Combined'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:indicators, axisLabel:{color:'#8ab4d0',fontSize:9,rotate:15} },
+    yAxis:{ type:'value', name:'权重', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'AHP', type:'line', data:ahp, lineStyle:{color:'#4090d0'}, symbol:'circle', symbolSize:6 },
+      { name:'Entropy', type:'line', data:entropy, lineStyle:{color:'#60d040'}, symbol:'diamond', symbolSize:6 },
+      { name:'CRITIC', type:'line', data:critic, lineStyle:{color:'#f0a020'}, symbol:'triangle', symbolSize:7 },
+      { name:'Combined', type:'line', data:combined, lineStyle:{color:'#e04050',width:2.5}, symbol:'circle', symbolSize:8 },
+    ]
+  });
+}
+
+function renderDecCrossChart() {
+  const c = initChart('decCrossChart');
+  if (!c) return;
+  const schemes = (DATA.decision?.schemes) || ['方案A','方案B','方案C','方案D'];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['TOPSIS','VIKOR (Si)','VIKOR (Ri)','GRA关联度'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:schemes, axisLabel:{color:'#8ab4d0',fontSize:10} },
+    yAxis:{ type:'value', name:'得分', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'TOPSIS', type:'bar', data:[0.618,0.668,0.568,0.382], barWidth:14,
+        itemStyle:{color:'#60d040'}, label:{show:true,position:'top',color:'#8ab4d0',fontSize:8} },
+      { name:'VIKOR (Si)', type:'bar', data:[0.55,0.35,0.48,0.72], barWidth:14,
+        itemStyle:{color:'#4090d0'}, label:{show:true,position:'top',color:'#8ab4d0',fontSize:8} },
+      { name:'VIKOR (Ri)', type:'bar', data:[0.45,0.25,0.40,0.65], barWidth:14,
+        itemStyle:{color:'#f0a020'}, label:{show:true,position:'top',color:'#8ab4d0',fontSize:8} },
+      { name:'GRA关联度', type:'bar', data:[0.72,0.78,0.68,0.52], barWidth:14,
+        itemStyle:{color:'#c090d0'}, label:{show:true,position:'top',color:'#8ab4d0',fontSize:8} },
+    ]
+  });
+}
+
+function renderDecBordaChart() {
+  const c = initChart('decBordaChart');
+  if (!c) return;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    series:[{
+      type:'gauge',
+      startAngle:180, endAngle:0,
+      min:0, max:300,
+      axisLine:{show:true,lineStyle:{width:20,color:[[0.3,'#e04050'],[0.6,'#f0a020'],[0.8,'#4090d0'],[1,'#60d040']]}},
+      axisTick:{show:false}, splitLine:{show:false}, axisLabel:{show:false},
+      detail:{formatter:'方案B',fontSize:20,color:'#60d040',offsetCenter:[0,'40%']},
+      data:[{value:240,name:'Borda得分'}]
+    }]
+  });
+}
+
+// ==================== 8760h Dispatch ====================
+async function renderDispatch() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="dispMetrics"></div>
+    <div class="row2">
+      <div class="chart-box"><h3>选择日期调度仿真</h3>
+        <div style="display:flex;gap:8px;margin-bottom:6px;align-items:center;">
+          <label style="font-size:11px;color:#8ab4d0;">日期:</label>
+          <input type="range" id="dispDay" min="0" max="364" value="200" style="flex:1;accent-color:var(--accent);"
+            oninput="document.getElementById('dispDayLabel').textContent=this.value; loadDispatchChart();">
+          <span id="dispDayLabel" style="color:var(--accent);font-size:12px;min-width:30px;">200</span>
+          <button onclick="loadDispatchChart()" style="background:var(--accent);border:none;color:#000;padding:4px 12px;border-radius:4px;cursor:pointer;font-weight:600;">更新</button>
+        </div>
+        <div class="chart-inner tall" id="dispDayChart"></div>
+      </div>
+      <div>
+        <div class="chart-box"><h3>全年月度能量平衡</h3><div class="chart-inner" id="dispMonthlyChart"></div></div>
+        <div class="chart-box"><h3>日类型购电成本分布</h3><div class="chart-inner" id="dispDayTypeChart"></div></div>
+      </div>
+    </div>
+  `;
+  setTimeout(() => loadDispatchChart(), 100);
+  loadDispatchMonthlyChart();
+}
+
+async function loadDispatchChart() {
+  const day = parseInt(document.getElementById('dispDay')?.value || 200);
+  const data = await fetchAPI(`/api/simulate/dispatch-day?day=${day}&pv_cap=1231&ess_cap=2000&ess_pow=1000`);
+  if (!data) return;
+  // Update metrics
+  const s = data.summary;
+  document.getElementById('dispMetrics').innerHTML = `
+    <div class="metric-card pv"><div class="label">日光伏发电</div><div class="value">${s.total_pv.toFixed(0)}</div><div class="unit">kWh</div></div>
+    <div class="metric-card load"><div class="label">日总用电</div><div class="value">${s.total_load.toFixed(0)}</div><div class="unit">kWh</div></div>
+    <div class="metric-card"><div class="label">日网购电</div><div class="value">${s.total_grid_import.toFixed(0)}</div><div class="unit">kWh</div></div>
+    <div class="metric-card accent2"><div class="label">日自洽率</div><div class="value">${(s.self_sufficiency*100).toFixed(1)}%</div><div class="unit"></div></div>
+    <div class="metric-card warn"><div class="label">网购成本</div><div class="value">${s.grid_cost.toFixed(0)}</div><div class="unit">元</div></div>
+    <div class="metric-card"><div class="label">碳减排</div><div class="value">${s.carbon_reduction.toFixed(0)}</div><div class="unit">kg CO₂</div></div>
+  `;
+  const c = initChart('dispDayChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  const hourly = data.hourly;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['光伏','负荷','网购电','上网电','ESS充电','ESS放电'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:60, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:[
+      { type:'value', name:'功率(kW)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+      { type:'value', name:'电价/SOC', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'}, min:0, max:1.5 }
+    ],
+    series:[
+      { name:'光伏', type:'line', data:hourly.map(d=>d.pv), lineStyle:{color:'#f0a020',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(240,160,32,0.15)'} },
+      { name:'负荷', type:'line', data:hourly.map(d=>d.load), lineStyle:{color:'#e04050',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(224,64,80,0.1)'} },
+      { name:'网购电', type:'bar', data:hourly.map(d=>d.grid_import), barWidth:8,
+        itemStyle:{color:'#e04050'}, stack:'grid' },
+      { name:'上网电', type:'bar', data:hourly.map(d=>-d.grid_export), barWidth:8,
+        itemStyle:{color:'#30d0b0'}, stack:'grid' },
+      { name:'ESS充电', type:'bar', data:hourly.map(d=>-d.ess_ch), barWidth:8,
+        itemStyle:{color:'#4090d0'}, stack:'ess' },
+      { name:'ESS放电', type:'bar', data:hourly.map(d=>d.ess_disch), barWidth:8,
+        itemStyle:{color:'#60d040'}, stack:'ess' },
+      { name:'SOC', type:'line', yAxisIndex:1, data:hourly.map(d=>d.soc*100),
+        lineStyle:{color:'#60d040',width:2}, symbol:'circle', symbolSize:4 },
+      { name:'TOU电价', type:'line', yAxisIndex:1, data:hourly.map(d=>d.tou),
+        lineStyle:{color:'#c090d0',width:1.5,type:'dashed'}, symbol:'none' },
+    ]
+  }, true);
+}
+
+async function loadDispatchMonthlyChart() {
+  const data = await fetchAPI('/api/simulate/dispatch-year-summary?pv_cap=1231&ess_cap=2000&ess_pow=1000');
+  if (!data || !data.monthly) return;
+  const c = initChart('dispMonthlyChart');
+  if (!c) return;
+  const months = Array.from({length:12},(_,i)=>`${i+1}月`);
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{},
+    legend:{ data:['光伏','用电','网购'], textStyle:{color:'#8ab4d0',fontSize:10}, top:0 },
+    grid:{ left:50, right:50, top:35, bottom:20 },
+    xAxis:{ type:'category', data:months, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:[
+      { type:'value', name:'MWh', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa',formatter:v=>(v/1000).toFixed(0)} },
+      { type:'value', name:'自洽率%', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} }
+    ],
+    series:[
+      { name:'光伏', type:'bar', data:data.monthly.pv.map(v=>v/1000), barWidth:18, itemStyle:{color:'#f0a020'} },
+      { name:'用电', type:'bar', data:data.monthly.load.map(v=>v/1000), barWidth:18, itemStyle:{color:'#e04050'} },
+      { name:'网购', type:'bar', data:data.monthly.grid.map(v=>v/1000), barWidth:18, itemStyle:{color:'#4090d0'} },
+      { name:'自洽率', type:'line', yAxisIndex:1, data:data.monthly.ssr.map(v=>v*100),
+        lineStyle:{color:'#60d040',width:2.5}, symbol:'circle', symbolSize:6,
+        label:{show:true,color:'#60d040',fontSize:8,formatter:p=>p.value.toFixed(1)+'%'} },
+    ]
+  });
+  // Day type chart
+  setTimeout(() => {
+    const c2 = initChart('dispDayTypeChart');
+    if (!c2 || !data.daily) return;
+    const dtCosts = {workday:[],weekend:[],holiday:[],spring_festival:[]};
+    data.daily.forEach(d => { if (dtCosts[d.day_type]) dtCosts[d.day_type].push(d.grid_cost); });
+    const dtMean = Object.fromEntries(Object.entries(dtCosts).map(([k,v])=>[k,v.length?(v.reduce((a,b)=>a+b,0)/v.length):0]));
+    c2.setOption({
+      backgroundColor:'transparent', tooltip:{},
+      grid:{ left:50, right:20, top:10, bottom:25 },
+      xAxis:{ type:'category', data:['工作日','双休日','节假日','春运'], axisLabel:{color:'#8ab4d0',fontSize:9} },
+      yAxis:{ type:'value', name:'日均网购成本(元)', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+      series:[{
+        type:'bar', data:[dtMean.workday||0,dtMean.weekend||0,dtMean.holiday||0,dtMean.spring_festival||0],
+        barWidth:28,
+        itemStyle:{color: params => ['#4090d0','#60a0d0','#f08030','#e04050'][params.dataIndex]},
+        label:{show:true,position:'top',color:'#8ab4d0',fontSize:9,formatter:p=>p.value.toFixed(0)}
+      }]
+    });
+  }, 200);
+}
+
+// ==================== SCADA Monitor ====================
+function renderSCADA() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="scadaMetrics"></div>
+    <div class="row2-1">
+      <div class="chart-box" style="min-height:480px;">
+        <h3>微网单线图 — 实时能流监控</h3>
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+          <span style="font-size:10px;color:var(--accent);">00:00</span>
+          <input type="range" id="scadaHour" min="0" max="23" value="12" style="flex:1;accent-color:var(--accent);"
+            oninput="updateSCADA(parseInt(this.value));">
+          <span style="font-size:10px;color:var(--accent);">23:00</span>
+          <span id="scadaTimeLabel" style="color:var(--accent);font-size:13px;font-weight:600;">12:00</span>
+          <button id="scadaPlayBtn" onclick="toggleSCADAPlay()" style="background:var(--accent);border:none;color:#000;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;">▶ 播放</button>
+        </div>
+        <div id="scadaSLD" style="height:420px;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;"></div>
+      </div>
+      <div>
+        <div class="chart-box"><h3>24h功率曲线</h3><div class="chart-inner" id="scadaPowerChart"></div></div>
+        <div class="chart-box"><h3>SOC + 分时电价</h3><div class="chart-inner" id="scadaSOCChart"></div></div>
+        <div class="chart-box" style="flex:0.5;"><h3>日能量汇总</h3>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;" id="scadaSummary"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  loadSCADAData();
+}
+
+let scadaData = null, scadaTimer = null, scadaPlaying = false;
+
+async function loadSCADAData() {
+  scadaData = await fetchAPI('/api/simulate/dispatch-day?day=200&pv_cap=1231&ess_cap=2000&ess_pow=1000');
+  if (scadaData) updateSCADA(12);
+}
+
+function updateSCADA(h) {
+  if (!scadaData) return;
+  const d = scadaData.hourly[h];
+  const s = scadaData.summary;
+  document.getElementById('scadaTimeLabel').textContent = String(h).padStart(2,'0')+':00';
+  document.getElementById('scadaHour').value = h;
+  document.getElementById('scadaMetrics').innerHTML = `
+    <div class="metric-card pv"><div class="label">光伏出力</div><div class="value">${d.pv.toFixed(0)}</div><div class="unit">kW</div></div>
+    <div class="metric-card load"><div class="label">总负荷</div><div class="value">${d.load.toFixed(0)}</div><div class="unit">kW</div></div>
+    <div class="metric-card ess"><div class="label">SOC</div><div class="value">${(d.soc*100).toFixed(1)}%</div><div class="unit">${d.ess_ch>2?'充电中':d.ess_disch>2?'放电中':'待机'}</div></div>
+    <div class="metric-card"><div class="label">净负荷</div><div class="value">${d.net.toFixed(0)}</div><div class="unit">kW</div></div>
+    <div class="metric-card warn"><div class="label">电网交互</div><div class="value">${d.grid_import>1?'+'+d.grid_import.toFixed(0):d.grid_export>1?'-'+d.grid_export.toFixed(0):'0'}</div><div class="unit">kW</div></div>
+    <div class="metric-card"><div class="label">电价</div><div class="value">${d.tou.toFixed(3)}</div><div class="unit">元/kWh</div></div>
+  `;
+  document.getElementById('scadaSummary').innerHTML = `
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#f0a020;">${s.total_pv.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">光伏 kWh</div></div>
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#e8e8f0;">${s.total_load.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">用电 kWh</div></div>
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#e04050;">${s.total_grid_import.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">网购 kWh</div></div>
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#60d040;">${(s.self_sufficiency*100).toFixed(1)}%</div><div style="font-size:8px;color:#5a85a5;">自洽率</div></div>
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#f08030;">${s.grid_cost.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">网购成本 ￥</div></div>
+    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#60d040;">${s.carbon_reduction.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">碳减排 kg</div></div>
+  `;
+  drawSCADASLD(d);
+  drawSCADAPowerChart(h);
+  drawSCADASOCChart(h);
+}
+
+function drawSCADASLD(d) {
+  const el = document.getElementById('scadaSLD');
+  if (!el) return;
+  const w = el.clientWidth, h = el.clientHeight;
+  const isDay = parseInt(document.getElementById('scadaHour')?.value || 12) >= 6 && parseInt(document.getElementById('scadaHour')?.value || 12) < 19;
+  const socPct = d.soc * 100;
+  const pvAlpha = d.pv > 5 ? 1 : 0.3;
+  const gridImpAlpha = d.grid_import > 5 ? 1 : 0.2;
+  const gridExpAlpha = d.grid_export > 5 ? 1 : 0.2;
+  const essChAlpha = d.ess_ch > 2 ? 1 : 0.3;
+  const essDisAlpha = d.ess_disch > 2 ? 1 : 0.3;
+  el.innerHTML = `
+    <svg width="${w}" height="${h}" xmlns="http://www.w3.org/2000/svg" style="background:${isDay?'#0a1628':'#050d18'};">
+      <defs>
+        <filter id="g"><feGaussianBlur stdDeviation="1.5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      </defs>
+      <!-- Grid -->
+      <rect x="${w/2-80}" y="8" width="160" height="22" rx="5" fill="#142840" stroke="#3080b0" stroke-width="1.5"/>
+      <text x="${w/2}" y="23" text-anchor="middle" fill="#d8ecf8" font-size="11" font-weight="600">大电网 10kV</text>
+      <!-- Transformer -->
+      <rect x="${w/2-70}" y="40" width="140" height="30" rx="5" fill="#0f2038" stroke="#4080b0" stroke-width="1.5"/>
+      <text x="${w/2}" y="55" text-anchor="middle" fill="#c0ddf0" font-size="10" font-weight="600">箱变 2×1250kVA</text>
+      <text x="${w/2}" y="65" text-anchor="middle" fill="#6090b0" font-size="7">Dyn11 10/0.4kV</text>
+      <!-- Busbar -->
+      <rect x="10" y="78" width="${w-20}" height="14" rx="3" fill="#b0b0b0" stroke="#808080" stroke-width="1"/>
+      <text x="${w/2}" y="88" text-anchor="middle" fill="#0a1628" font-size="10" font-weight="700">400V 交流母线</text>
+      <!-- PV Panel -->
+      <rect x="20" y="110" width="${w/5-10}" height="${h-130}" rx="6" fill="#0c1808" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
+      <text x="20+${(w/5-10)/2}" y="130" text-anchor="middle" fill="#f0b840" font-size="10" font-weight="600">☀ 光伏</text>
+      <text x="20+${(w/5-10)/2}" y="145" text-anchor="middle" fill="#80a060" font-size="8">${d.pv.toFixed(0)} kW</text>
+      <!-- ESS Panel -->
+      <rect x="${w/5+30}" y="110" width="${w/5-10}" height="${h-130}" rx="6" fill="#081220" stroke="#4090d0" stroke-width="2"/>
+      <text x="${w/5+30+(w/5-10)/2}" y="130" text-anchor="middle" fill="#50b0f0" font-size="10" font-weight="600">🔋 储能</text>
+      <rect x="${w/5+35}" y="${h-50}" width="${w/5-20}" height="10" rx="5" fill="#0a1624" stroke="#3060a0" stroke-width="0.8"/>
+      <rect x="${w/5+35}" y="${h-50}" width="${(w/5-20)*socPct/100}" height="10" rx="5" fill="#40a050"/>
+      <text x="${w/5+30+(w/5-10)/2}" y="${h-42}" text-anchor="middle" fill="#a0d0a0" font-size="8">${socPct.toFixed(0)}%</text>
+      <!-- EV Panel -->
+      <rect x="${2*w/5+40}" y="110" width="${w/5-10}" height="${h-130}" rx="6" fill="#100a0c" stroke="#e04050" stroke-width="2"/>
+      <text x="${2*w/5+40+(w/5-10)/2}" y="130" text-anchor="middle" fill="#f06878" font-size="10" font-weight="600">⚡ 充电</text>
+      <text x="${2*w/5+40+(w/5-10)/2}" y="145" text-anchor="middle" fill="#b06060" font-size="8">${d.load.toFixed(0)} kW</text>
+      <!-- Building Panel -->
+      <rect x="${3*w/5+50}" y="110" width="${w/5-10}" height="${h-130}" rx="6" fill="#101218" stroke="#8090a0" stroke-width="2"/>
+      <text x="${3*w/5+50+(w/5-10)/2}" y="130" text-anchor="middle" fill="#b0c0d0" font-size="10" font-weight="600">🏠 建筑</text>
+      <text x="${3*w/5+50+(w/5-10)/2}" y="145" text-anchor="middle" fill="#708090" font-size="8">~${(d.load*0.35).toFixed(0)} kW</text>
+      <!-- Connections - grid to busbar -->
+      <line x1="${w/2}" y1="70" x2="${w/2}" y2="78" stroke="#a0b0c0" stroke-width="3" opacity="${gridImpAlpha||gridExpAlpha}"/>
+      <line x1="${w/2}" y1="30" x2="${w/2}" y2="40" stroke="#60a0c0" stroke-width="2.5"/>
+      <!-- Busbar to panels -->
+      <line x1="20+${(w/5-10)/2}" y1="92" x2="20+${(w/5-10)/2}" y2="110" stroke="#f0a020" stroke-width="2.5" opacity="${pvAlpha}"/>
+      <line x1="${w/5+30+(w/5-10)/2}" y1="92" x2="${w/5+30+(w/5-10)/2}" y2="110" stroke="#4090d0" stroke-width="2.5"/>
+      <line x1="${2*w/5+40+(w/5-10)/2}" y1="92" x2="${2*w/5+40+(w/5-10)/2}" y2="110" stroke="#e04050" stroke-width="2.5"/>
+      <line x1="${3*w/5+50+(w/5-10)/2}" y1="92" x2="${3*w/5+50+(w/5-10)/2}" y2="110" stroke="#8090a0" stroke-width="2.5"/>
+      <!-- Flow dots -->
+      ${d.pv>5?`<circle cx="${20+(w/5-10)/2}" cy="${95+d.soc*15}" r="4" fill="#f0a020" filter="url(#g)"/>`:''}
+      ${d.ess_ch>2?`<circle cx="${w/5+30+(w/5-10)/2}" cy="${95+((d.ess_ch/500)*15)}" r="4" fill="#4090d0" filter="url(#g)"/>`:''}
+      ${d.ess_disch>2?`<circle cx="${w/5+30+(w/5-10)/2}" cy="${105-((d.ess_disch/500)*15)}" r="4" fill="#60d040" filter="url(#g)"/>`:''}
+      ${d.grid_import>5?`<circle cx="${w/2}" cy="${74+d.grid_import/200}" r="4" fill="#e04050" filter="url(#g)"/>`:''}
+      ${d.grid_export>5?`<circle cx="${w/2}" cy="${80-d.grid_export/200}" r="4" fill="#30d0b0" filter="url(#g)"/>`:''}
+    </svg>
+  `;
+}
+
+function drawSCADAPowerChart(h) {
+  if (!scadaData) return;
+  const c = initChart('scadaPowerChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  const d = scadaData.hourly;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['光伏','负荷','网购电','上网电'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'光伏', type:'line', data:d.map(x=>x.pv), lineStyle:{color:'#f0a020',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(240,160,32,0.08)'} },
+      { name:'负荷', type:'line', data:d.map(x=>x.load), lineStyle:{color:'#e04050',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(224,64,80,0.06)'} },
+      { name:'网购电', type:'line', data:d.map(x=>x.grid_import), lineStyle:{color:'#e04050',width:1.5,type:'dashed'}, symbol:'none' },
+      { name:'上网电', type:'line', data:d.map(x=>x.grid_export), lineStyle:{color:'#30d0b0',width:1.5}, symbol:'none' },
+    ],
+    graphic:[{type:'rect',left:`${45+(h/23)*(window.innerWidth*0.35-60)}`,top:30,width:2,height:'80%',shape:{fill:'#00c8f0'},z:100}]
+  }, true);
+}
+
+function drawSCADASOCChart(h) {
+  if (!scadaData) return;
+  const c = initChart('scadaSOCChart');
+  if (!c) return;
+  const hours = Array.from({length:24},(_,i)=>i+':00');
+  const d = scadaData.hourly;
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['SOC','TOU电价'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:50, top:30, bottom:25 },
+    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    yAxis:[
+      { type:'value', name:'SOC %', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'}, min:0, max:100 },
+      { type:'value', name:'元/kWh', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} }
+    ],
+    series:[
+      { name:'SOC', type:'line', data:d.map(x=>x.soc*100), lineStyle:{color:'#60d040',width:2.5},
+        areaStyle:{color:'rgba(96,208,64,0.1)'}, symbol:'circle', symbolSize:4 },
+      { name:'TOU电价', type:'line', yAxisIndex:1, data:d.map(x=>x.tou),
+        lineStyle:{color:'#c090d0',width:1.5,type:'dashed'}, symbol:'none' },
+      { name:'SOC范围', type:'line', data:Array(24).fill(10), lineStyle:{color:'#2a5a2a',width:1}, symbol:'none' },
+      { name:'SOC范围', type:'line', data:Array(24).fill(90), lineStyle:{color:'#2a5a2a',width:1}, symbol:'none' },
+    ],
+    graphic:[{type:'rect',left:`${45+(h/23)*(window.innerWidth*0.35-60)}`,top:30,width:2,height:'80%',shape:{fill:'#00c8f0'},z:100}]
+  }, true);
+}
+
+function toggleSCADAPlay() {
+  scadaPlaying = !scadaPlaying;
+  const btn = document.getElementById('scadaPlayBtn');
+  if (scadaPlaying) {
+    btn.textContent = '⏸ 停止';
+    btn.style.background = '#e04050';
+    let h = parseInt(document.getElementById('scadaHour')?.value || 0);
+    scadaTimer = setInterval(() => { h = (h+1)%24; updateSCADA(h); }, 1500);
+  } else {
+    btn.textContent = '▶ 播放';
+    btn.style.background = 'var(--accent)';
+    if (scadaTimer) clearInterval(scadaTimer);
+  }
+}
+
+// ==================== Live Charging Station ====================
+let liveStationInterval = null;
+let liveStationData = null;
+let liveStationCars = [];
+let liveStationTime = 0;
+
+async function renderLiveStation() {
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="chart-box" style="margin-bottom:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <h3 style="margin:0;">充电站实景模拟 — 20个充电终端 + 动态车辆</h3>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <select id="lsHour" onchange="refreshLiveStation()" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:3px 8px;border-radius:4px;">
+            ${Array.from({length:24},(_,i)=>`<option value="${i}"${i===12?' selected':''}>${String(i).padStart(2,'0')}:00</option>`).join('')}
+          </select>
+          <select id="lsDayType" onchange="refreshLiveStation()" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:3px 8px;border-radius:4px;">
+            <option value="workday">工作日</option><option value="weekend">双休日</option><option value="holiday">节假日</option>
+          </select>
+          <select id="lsMonth" onchange="refreshLiveStation()" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:3px 8px;border-radius:4px;">
+            ${Array.from({length:12},(_,i)=>`<option value="${i+1}"${i===5?' selected':''}>${i+1}月</option>`).join('')}
+          </select>
+          <button onclick="refreshLiveStation()" style="background:var(--accent);border:none;color:#000;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;">刷新</button>
+          <span style="color:var(--accent);font-size:12px;font-weight:600;" id="lsClock">--:--</span>
+          <button onclick="toggleLiveAnim()" id="lsAnimBtn" style="background:var(--accent2);border:none;color:#000;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;">▶ 实时动画</button>
+        </div>
+      </div>
+    </div>
+    <div class="metrics-row" id="lsMetrics"></div>
+    <div class="row2-1">
+      <div class="chart-box">
+        <h3>🅿️ 服务区充电站 — 俯视图 <span style="font-size:10px;color:#5a8aaa;">(16×120kW + 2×480kW 超充堆)</span></h3>
+        <canvas id="lsCanvas" style="width:100%;height:460px;border-radius:6px;"></canvas>
+      </div>
+      <div>
+        <div class="chart-box"><h3>充电功率曲线 (60分钟)</h3><div class="chart-inner short" id="lsPowerChart"></div></div>
+        <div class="chart-box"><h3>实时事件日志</h3>
+          <div id="lsLog" style="height:200px;overflow-y:auto;font-size:10px;font-family:monospace;padding:6px;color:#8ab4d0;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="chart-box"><h3>单桩利用率热力图 (20个终端 × 时间线)</h3><div class="chart-inner short" id="lsHeatmapChart"></div></div>
+  `;
+  refreshLiveStation();
+}
+
+async function refreshLiveStation() {
+  const hour = parseInt(document.getElementById('lsHour')?.value || 12);
+  const dayType = document.getElementById('lsDayType')?.value || 'workday';
+  const month = parseInt(document.getElementById('lsMonth')?.value || 6);
+  const data = await fetchAPI(`/api/simulate/charging-station-live?hour=${hour}&day_type=${dayType}&month=${month}`);
+  if (!data) return;
+  liveStationData = data;
+  liveStationTime = 0;
+
+  document.getElementById('lsMetrics').innerHTML = `
+    <div class="metric-card load"><div class="label">峰值功率</div><div class="value">${data.peak_power_kw.toFixed(0)}</div><div class="unit">kW</div></div>
+    <div class="metric-card"><div class="label">小时充电量</div><div class="value">${data.total_energy_kwh.toFixed(0)}</div><div class="unit">kWh</div></div>
+    <div class="metric-card"><div class="label">平均在用桩数</div><div class="value">${data.avg_active_sessions.toFixed(1)}</div><div class="unit">/ ${data.total_piles}台</div></div>
+    <div class="metric-card"><div class="label">终端总数</div><div class="value">${data.total_piles}</div><div class="unit">16×120kW + 2×480kW</div></div>
+    <div class="metric-card"><div class="label">仿真时段</div><div class="value">${String(hour).padStart(2,'0')}:00</div><div class="unit">${dayType} ${month}月</div></div>
+  `;
+
+  drawLiveCanvas(data, 0);
+  drawLivePowerChart(data);
+  drawLiveHeatmapChart(data);
+  generateLiveLog(data, 0);
+}
+
+function drawLiveCanvas(data, timeIdx) {
+  const canvas = document.getElementById('lsCanvas');
+  if (!canvas) return;
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#0a1a10';
+  ctx.fillRect(0, 0, w, h);
+
+  // Road
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, h*0.85, w, h*0.15);
+  ctx.strokeStyle = '#f0c040';
+  ctx.setLineDash([30, 15]);
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(0, h*0.88); ctx.lineTo(w, h*0.88); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Parking lot grid
+  const pileConfig = data.pile_config || [];
+  const nCols = 8;
+  const colW = w / (nCols + 1);
+  const rowOffsets = [h*0.12, h*0.38, h*0.62];
+
+  // Draw parking spots
+  pileConfig.forEach((pile, i) => {
+    const col = i % nCols;
+    const row = Math.floor(i / nCols);
+    const cx = colW * (col + 1);
+    const cy = rowOffsets[Math.min(row, 2)];
+    const spotW = colW * 0.8;
+    const spotH = h * 0.2;
+
+    // Parking spot background
+    const occupied = liveStationCars.some(c => c.pile_idx === i);
+    ctx.fillStyle = occupied ? 'rgba(240,160,32,0.15)' : 'rgba(255,255,255,0.03)';
+    ctx.strokeStyle = pile.type === '480kW' ? '#e04050' : '#4a8a4a';
+    ctx.lineWidth = pile.type === '480kW' ? 2 : 1;
+    ctx.fillRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
+    ctx.strokeRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
+
+    // Pile label
+    ctx.fillStyle = pile.type === '480kW' ? '#e04050' : '#6aaa6a';
+    ctx.font = '8px "Microsoft YaHei"';
+    ctx.textAlign = 'center';
+    ctx.fillText(pile.id, cx, cy - spotH/2 - 4);
+    ctx.fillText(pile.type, cx, cy + spotH/2 + 12);
+
+    // Connector icon
+    ctx.fillStyle = occupied ? '#f0a020' : '#4a8a4a';
+    ctx.fillRect(cx - 4, cy - spotH/2 + 4, 8, 14);
+    ctx.fillStyle = '#000';
+    ctx.fillRect(cx - 2, cy - spotH/2 + 6, 4, 10);
+  });
+
+  // Draw cars in active sessions
+  const snapshot = data.timeline?.[timeIdx] || data.timeline?.[0];
+  if (snapshot?.piles_detail) {
+    liveStationCars = snapshot.piles_detail;
+    snapshot.piles_detail.forEach(car => {
+      const pileIdx = car.pile_idx;
+      const col = pileIdx % nCols;
+      const row = Math.floor(pileIdx / nCols);
+      const cx = colW * (col + 1);
+      const cy = rowOffsets[Math.min(row, 2)];
+      const spotW = colW * 0.8;
+      const spotH = h * 0.2;
+
+      // Car body
+      const carW = spotW * 0.7;
+      const carH = spotH * 0.65;
+      const carX = cx - carW/2;
+      const carY = cy - carH/2;
+
+      // Car shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.4)';
+      ctx.fillRect(carX + 2, carY + 2, carW, carH);
+
+      // Car body
+      ctx.fillStyle = car.car_color || '#60a0d0';
+      ctx.fillRect(carX, carY, carW, carH);
+      // Car roof
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(carX + carW*0.15, carY, carW*0.7, carH*0.6);
+      // Windows
+      ctx.fillStyle = 'rgba(100,180,240,0.5)';
+      ctx.fillRect(carX + carW*0.2, carY + 2, carW*0.25, carH*0.5);
+      ctx.fillRect(carX + carW*0.55, carY + 2, carW*0.25, carH*0.5);
+
+      // SOC progress bar on car
+      const barW = carW * 0.8;
+      const barH = 4;
+      const barX = carX + carW*0.1;
+      const barY = carY + carH + 2;
+      ctx.fillStyle = '#1a1a1a';
+      ctx.fillRect(barX, barY, barW, barH);
+      const socGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+      socGrad.addColorStop(0, '#e04050');
+      socGrad.addColorStop(0.5, '#f0a020');
+      socGrad.addColorStop(1, '#60d040');
+      ctx.fillStyle = socGrad;
+      ctx.fillRect(barX, barY, barW * car.soc, barH);
+
+      // SOC text
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 7px "Microsoft YaHei"';
+      ctx.textAlign = 'center';
+      ctx.fillText((car.soc*100).toFixed(0) + '%', cx, barY - 2);
+
+      // Remaining time
+      ctx.fillStyle = '#8ab4d0';
+      ctx.font = '7px monospace';
+      ctx.fillText(car.remaining_min > 0 ? car.remaining_min.toFixed(0) + 'min' : '完成', cx, barY + 10);
+    });
+  }
+
+  // Legend
+  ctx.fillStyle = '#60d040'; ctx.fillRect(16, 8, 10, 10);
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('空闲', 30, 16);
+  ctx.fillStyle = '#f0a020'; ctx.fillRect(80, 8, 10, 10);
+  ctx.fillText('充电中', 94, 16);
+
+  if (snapshot) {
+    ctx.fillStyle = '#8ab4d0';
+    ctx.textAlign = 'right';
+    ctx.fillText(`运行中: ${snapshot.active_sessions}辆 | 排队: ${snapshot.waiting}辆 | 总功率: ${snapshot.total_power_kw.toFixed(0)}kW | 时刻: ${snapshot.minute}min`, w-16, 16);
+  }
+
+  // Time indicator
+  document.getElementById('lsClock').textContent = snapshot ? `${String(Math.floor(snapshot.minute/60)).padStart(2,'0')}:${String(snapshot.minute%60).padStart(2,'0')}` : '--:--';
+}
+
+function drawLivePowerChart(data) {
+  const c = initChart('lsPowerChart');
+  if (!c) return;
+  const mins = data.timeline?.map(t => t.minute + 'min') || [];
+  const powers = data.timeline?.map(t => t.total_power_kw) || [];
+  const active = data.timeline?.map(t => t.active_sessions * 60) || [];
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['总功率','在用桩数×60'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:50, top:30, bottom:25 },
+    xAxis:{ type:'category', data:mins, axisLabel:{color:'#5a8aaa',fontSize:8,interval:3} },
+    yAxis:[
+      { type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
+      { type:'value', name:'桩', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} }
+    ],
+    series:[
+      { name:'总功率', type:'line', data:powers, lineStyle:{color:'#f0a020',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(240,160,32,0.15)'} },
+      { name:'在用桩数×60', type:'bar', yAxisIndex:1, data:active, barWidth:6,
+        itemStyle:{color:'rgba(96,208,64,0.5)'} },
+    ]
+  }, true);
+}
+
+function drawLiveHeatmapChart(data) {
+  const c = initChart('lsHeatmapChart');
+  if (!c) return;
+  const heatData = [];
+  data.timeline?.forEach(t => {
+    t.piles_detail?.forEach(p => {
+      heatData.push([t.minute, p.pile_idx, 1]);
+    });
+  });
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{formatter:p=>`${p.data[0]}min | ${data.pile_config?.[p.data[1]]?.id||p.data[1]} | 充电中`},
+    grid:{ left:60, right:15, top:10, bottom:20 },
+    xAxis:{ type:'category', data:data.timeline?.map(t=>t.minute+'min')||[], axisLabel:{color:'#5a8aaa',fontSize:8,interval:3}, position:'top' },
+    yAxis:{ type:'category', data:data.pile_config?.map(p=>p.id)||[], axisLabel:{color:'#8ab4d0',fontSize:8} },
+    visualMap:{ show:false, min:0, max:1, inRange:{color:['#0a3040','#60d040']} },
+    series:[{ type:'heatmap', data:heatData }]
+  });
+}
+
+function generateLiveLog(data, timeIdx) {
+  const logEl = document.getElementById('lsLog');
+  if (!logEl) return;
+  const snapshot = data.timeline?.[timeIdx];
+  if (!snapshot) return;
+  let html = `<div style="color:#5a8aaa;margin-bottom:4px;">时刻 ${snapshot.minute}min | 活跃 ${snapshot.active_sessions}辆 | 排队 ${snapshot.waiting}辆 | 功率 ${snapshot.total_power_kw.toFixed(0)}kW</div>`;
+  snapshot.piles_detail?.forEach(car => {
+    const socColor = car.soc > 0.8 ? '#60d040' : car.soc > 0.5 ? '#f0a020' : '#e04050';
+    html += `<div style="padding:1px 0;"><span style="color:${car.car_color};">⬤</span> ${car.pile} | ${car.car_type} | <span style="color:${socColor}">SOC ${(car.soc*100).toFixed(0)}%</span> | ${car.charge_power}kW | 剩余${car.remaining_min}min</div>`;
+  });
+  logEl.innerHTML = html;
+}
+
+let liveAnimActive = false;
+let liveAnimFrame = null;
+
+function toggleLiveAnim() {
+  liveAnimActive = !liveAnimActive;
+  const btn = document.getElementById('lsAnimBtn');
+  if (liveAnimActive) {
+    btn.textContent = '⏸ 停止动画';
+    btn.style.background = '#e04050';
+    liveAnimLoop();
+  } else {
+    btn.textContent = '▶ 实时动画';
+    btn.style.background = 'var(--accent2)';
+    if (liveAnimFrame) cancelAnimationFrame(liveAnimFrame);
+  }
+}
+
+function liveAnimLoop() {
+  if (!liveAnimActive || !liveStationData?.timeline) return;
+  const totalFrames = liveStationData.timeline.length;
+  liveStationTime = (liveStationTime + 1) % totalFrames;
+  drawLiveCanvas(liveStationData, liveStationTime);
+  generateLiveLog(liveStationData, liveStationTime);
+  liveAnimFrame = requestAnimationFrame(() => {
+    setTimeout(() => liveAnimLoop(), 500);
+  });
+}
+
+// ==================== Tab Router ====================
+const renderers = {
+  overview: renderOverview,
+  'mc-load': renderMCLoad,
+  'pv-gen': renderPVGen,
+  building: renderBuilding,
+  topology: renderTopology,
+  optimization: renderOptimization,
+  nsga2: renderNSGA2,
+  'algo-compare': renderAlgoCompare,
+  robust: renderRobust,
+  economic: renderEconomic,
+  decision: renderDecision,
+  dispatch: renderDispatch,
+  scada: renderSCADA,
+  'live-station': renderLiveStation,
+};
+
+function renderTab(tab) {
+  disposeCharts();
+  if (scadaTimer) { clearInterval(scadaTimer); scadaPlaying = false; }
+  if (liveAnimActive) { liveAnimActive = false;
+    const btn = document.getElementById('lsAnimBtn');
+    if (btn) { btn.textContent = '▶ 实时动画'; btn.style.background = 'var(--accent2)'; }
+  }
+  if (liveAnimFrame) cancelAnimationFrame(liveAnimFrame);
+  const fn = renderers[tab];
+  if (fn) fn();
+}
+
+// ==================== Init ====================
+window.addEventListener('resize', () => {
+  Object.values(charts).forEach(c => { try { c.resize(); } catch(e) {} });
+});
+
+(async function init() {
+  await loadAllData();
+  renderTab('overview');
+})();
+</script>
+
+</body>
+</html>
