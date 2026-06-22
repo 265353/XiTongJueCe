@@ -508,19 +508,41 @@ def simulate_charging_station_live(
                 'start_min': minute,
                 'est_duration': round(duration_min, 0),
                 'soc_history': [round(start_soc, 2)],
+                'status': 'charging',  # charging / completed / departing
+                'depart_min': None,     # minute the car will actually leave
             })
 
         # 更新充电进度
         active_now = []
         for s in active_sessions:
             elapsed = minute - s['start_min']
-            progress = min(1.0, elapsed / max(s['est_duration'], 1))
-            current_soc = s['car']['start_soc'] + (s['car']['target_soc'] - s['car']['start_soc']) * progress
-            s['car']['current_soc'] = round(current_soc, 2)
-            s['car']['remaining_min'] = max(0, round(s['est_duration'] - elapsed, 0))
 
-            if progress < 1.0:
-                active_now.append(s)
+            if s['status'] == 'charging':
+                progress = min(1.0, elapsed / max(s['est_duration'], 1))
+                current_soc = s['car']['start_soc'] + (s['car']['target_soc'] - s['car']['start_soc']) * progress
+                s['car']['current_soc'] = round(current_soc, 2)
+                s['car']['remaining_min'] = max(0, round(s['est_duration'] - elapsed, 0))
+
+                if progress >= 1.0:
+                    # 充满 → 进入逗留状态 (2-5分钟后离开)
+                    s['status'] = 'completed'
+                    s['depart_min'] = minute + _rng.randint(2, 6)
+                    s['car']['current_soc'] = s['car']['target_soc']
+                    s['car']['remaining_min'] = 0
+                    active_now.append(s)
+                else:
+                    active_now.append(s)
+            elif s['status'] == 'completed':
+                # 逗留中, 检查是否到离开时间
+                if minute >= s['depart_min']:
+                    s['status'] = 'departing'
+                    s['car']['remaining_min'] = -1  # signal: leaving
+                    active_now.append(s)  # keep for one more frame to trigger departure anim
+                else:
+                    active_now.append(s)
+            elif s['status'] == 'departing':
+                # 这一帧之后真正移除 (前端会用prevLiveCars做渐隐)
+                pass  # 不加入 active_now
 
         # 检查等待队列
         used_piles_now = {s['pile_idx'] for s in active_now}
@@ -556,6 +578,7 @@ def simulate_charging_station_live(
                 'soc': s['car'].get('current_soc', s['car']['start_soc']),
                 'remaining_min': s['car'].get('remaining_min', s['est_duration']),
                 'charge_power': s['charge_power'],
+                'status': s.get('status', 'charging'),
             })
         minutes.append({
             'minute': minute,
