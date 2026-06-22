@@ -1452,25 +1452,26 @@ async function loadDispatchMonthlyChart() {
 function renderSCADA() {
   const c = document.getElementById('content');
   c.innerHTML = `
-    <div class="metrics-row" id="scadaMetrics"></div>
+    <div class="scada-metrics" id="scadaMetrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;"></div>
     <div class="row2-1">
       <div class="chart-box" style="min-height:480px;">
         <h3>微网单线图 — 实时能流监控</h3>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <div style="display:flex;align-items:center;gap:10px;margin:8px 0;">
           <span style="font-size:10px;color:var(--accent);">00:00</span>
           <input type="range" id="scadaHour" min="0" max="23" value="12" style="flex:1;accent-color:var(--accent);"
             oninput="updateSCADA(parseInt(this.value));">
           <span style="font-size:10px;color:var(--accent);">23:00</span>
-          <span id="scadaTimeLabel" style="color:var(--accent);font-size:13px;font-weight:600;">12:00</span>
-          <button id="scadaPlayBtn" onclick="toggleSCADAPlay()" style="background:var(--accent);border:none;color:#000;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;">▶ 播放</button>
+          <span id="scadaTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:40px;">12:00</span>
+          <button id="scadaPlayBtn" onclick="toggleSCADAPlay()" style="background:var(--accent);border:none;color:#000;padding:5px 16px;border-radius:4px;cursor:pointer;font-weight:600;">▶ 播放</button>
+          <span style="font-size:10px;color:#5a8aaa;" id="scadaDayInfo"></span>
         </div>
-        <div id="scadaSLD" style="height:420px;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;"></div>
+        <div id="scadaSLD" style="height:400px;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;"></div>
       </div>
       <div>
-        <div class="chart-box"><h3>24h功率曲线</h3><div class="chart-inner" id="scadaPowerChart"></div></div>
+        <div class="chart-box"><h3>24h 功率曲线</h3><div class="chart-inner" id="scadaPowerChart"></div></div>
         <div class="chart-box"><h3>SOC + 分时电价</h3><div class="chart-inner" id="scadaSOCChart"></div></div>
-        <div class="chart-box" style="flex:0.5;"><h3>日能量汇总</h3>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;" id="scadaSummary"></div>
+        <div class="chart-box"><h3>日运行汇总</h3>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;" id="scadaSummary"></div>
         </div>
       </div>
     </div>
@@ -1486,28 +1487,73 @@ async function loadSCADAData() {
   if (scadaData) updateSCADA(12);
 }
 
+function scadaCard(value, unit, label, color, icon) {
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;display:flex;align-items:center;gap:8px;">
+    <span style="font-size:16px;">${icon||''}</span>
+    <div style="flex:1;min-width:0;">
+      <div style="font-size:10px;color:#5a85a5;white-space:nowrap;">${label}</div>
+      <div style="font-size:18px;font-weight:700;color:${color||'var(--accent)'};line-height:1.3;">${value}</div>
+      <div style="font-size:8px;color:#4a7595;">${unit}</div>
+    </div>
+  </div>`;
+}
+
 function updateSCADA(h) {
   if (!scadaData) return;
   const d = scadaData.hourly[h];
   const s = scadaData.summary;
+  const di = scadaData.day_info;
+
   document.getElementById('scadaTimeLabel').textContent = String(h).padStart(2,'0')+':00';
   document.getElementById('scadaHour').value = h;
-  document.getElementById('scadaMetrics').innerHTML = `
-    <div class="metric-card pv"><div class="label">光伏出力</div><div class="value">${d.pv.toFixed(0)}</div><div class="unit">kW</div></div>
-    <div class="metric-card load"><div class="label">总负荷</div><div class="value">${d.load.toFixed(0)}</div><div class="unit">kW</div></div>
-    <div class="metric-card ess"><div class="label">SOC</div><div class="value">${(d.soc*100).toFixed(1)}%</div><div class="unit">${d.ess_ch>2?'充电中':d.ess_disch>2?'放电中':'待机'}</div></div>
-    <div class="metric-card"><div class="label">净负荷</div><div class="value">${d.net.toFixed(0)}</div><div class="unit">kW</div></div>
-    <div class="metric-card warn"><div class="label">电网交互</div><div class="value">${d.grid_import>1?'+'+d.grid_import.toFixed(0):d.grid_export>1?'-'+d.grid_export.toFixed(0):'0'}</div><div class="unit">kW</div></div>
-    <div class="metric-card"><div class="label">电价</div><div class="value">${d.tou.toFixed(3)}</div><div class="unit">元/kWh</div></div>
-  `;
-  document.getElementById('scadaSummary').innerHTML = `
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#f0a020;">${s.total_pv.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">光伏 kWh</div></div>
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#e8e8f0;">${s.total_load.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">用电 kWh</div></div>
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#e04050;">${s.total_grid_import.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">网购 kWh</div></div>
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#60d040;">${(s.self_sufficiency*100).toFixed(1)}%</div><div style="font-size:8px;color:#5a85a5;">自洽率</div></div>
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#f08030;">${s.grid_cost.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">网购成本 ￥</div></div>
-    <div style="background:rgba(255,255,255,0.03);padding:6px;border-radius:4px;text-align:center;"><div style="font-size:14px;font-weight:700;color:#60d040;">${s.carbon_reduction.toFixed(0)}</div><div style="font-size:8px;color:#5a85a5;">碳减排 kg</div></div>
-  `;
+
+  const weatherMap = {clear:'☀️晴',partly_cloudy:'⛅多云',cloudy:'☁️阴',overcast:'🌫️霾',rain:'🌧️雨'};
+  const dtMap = {workday:'工作日',weekend:'双休日',holiday:'节假日',spring_festival:'春运'};
+  document.getElementById('scadaDayInfo').textContent =
+    `${di.month}月 | ${dtMap[di.day_type]||di.day_type} | ${weatherMap[di.weather]||di.weather} | ${di.season==='summer'?'☀️夏':di.season==='winter'?'❄️冬':di.season==='spring'?'🌸春':'🍂秋'}`;
+
+  // 8 top metrics
+  const importVal = d.grid_import > 0.5 ? '+' + d.grid_import.toFixed(0) : '';
+  const exportVal = d.grid_export > 0.5 ? '-' + d.grid_export.toFixed(0) : '';
+  const gridVal = importVal || exportVal || '0';
+  const gridColor = d.grid_import > 0.5 ? '#e04050' : d.grid_export > 0.5 ? '#30d0b0' : '#5a8aaa';
+  const essVal = d.ess_ch > 2 ? '充电 '+d.ess_ch.toFixed(0) : d.ess_disch > 2 ? '放电 '+d.ess_disch.toFixed(0) : '待机';
+  const essColor = d.ess_ch > 2 ? '#4090d0' : d.ess_disch > 2 ? '#60d040' : '#5a8aaa';
+  const pvUtil = d.pv > 2 ? (d.pv - Math.max(0, d.pv - d.load + d.ess_ch - d.ess_disch)) / Math.max(d.pv, 1) * 100 : 0;
+  const transLoad = (d.grid_import + d.grid_export) / 2500 * 100;
+
+  document.getElementById('scadaMetrics').innerHTML =
+    scadaCard(d.pv.toFixed(0)+' kW', '当前出力', '☀️ 光伏发电', '#f0a020', '☀️') +
+    scadaCard(d.load.toFixed(0)+' kW', '充电+建筑+站用电', '📊 总负荷', '#e8e8f0', '⚡') +
+    scadaCard((d.soc*100).toFixed(1)+'%', essVal, '🔋 储能 SOC', essColor, '🔋') +
+    scadaCard(d.ess_ch>2?d.ess_ch.toFixed(0)+' kW':d.ess_disch>2?d.ess_disch.toFixed(0)+' kW':'0 kW', '充/放电功率', '🔄 ESS功率', '#50b0f0', '↕️') +
+    scadaCard(d.net.toFixed(0)+' kW', d.net>0?'缺电':'余电', '📐 净负荷', d.net>0?'#e04050':'#60d040', '📏') +
+    scadaCard(gridVal+' kW', '网购+/上网-', '🔌 电网交互', gridColor, '🏭') +
+    scadaCard('¥'+d.tou.toFixed(3), (d.tou>1?'峰时':d.tou>0.6?'平时':'谷时'), '💰 分时电价', (d.tou>1?'#e04050':d.tou>0.6?'#f0a020':'#60d040'), '💵') +
+    scadaCard(pvUtil.toFixed(1)+'%', '瞬时消纳率', '📈 光伏消纳', pvUtil>80?'#60d040':pvUtil>50?'#f0a020':'#e04050', '📊');
+
+  // 12 summary cards (3x4)
+  const peakLoad = Math.max(...scadaData.hourly.map(x=>x.load));
+  const peakPV = Math.max(...scadaData.hourly.map(x=>x.pv));
+  const peakGrid = Math.max(...scadaData.hourly.map(x=>x.grid_import));
+  document.getElementById('scadaSummary').innerHTML =
+    scadaCard(s.total_pv.toFixed(0), 'kWh', '光伏发电量', '#f0a020', '☀️') +
+    scadaCard(s.total_load.toFixed(0), 'kWh', '总用电量', '#e8e8f0', '⚡') +
+    scadaCard(s.total_grid_import.toFixed(0), 'kWh', '网购电量', '#e04050', '🏭') +
+    scadaCard(s.total_grid_export.toFixed(0), 'kWh', '上网电量', '#30d0b0', '📤') +
+    scadaCard((s.self_sufficiency*100).toFixed(1)+'%', '新能源自洽', '自洽率', '#60d040', '🎯') +
+    scadaCard('¥'+s.grid_cost.toFixed(0), '元', '网购成本', '#f08030', '💵') +
+    scadaCard(s.carbon_reduction.toFixed(0), 'kg CO₂', '碳减排量', '#40e0a0', '🌿') +
+    scadaCard(s.ess_cycles.toFixed(2), '次', 'ESS等效循环', '#50b0f0', '🔄') +
+    scadaCard(peakLoad.toFixed(0), 'kW 峰值', '最大负荷', '#e04050', '⬆️') +
+    scadaCard(peakPV.toFixed(0), 'kW 峰值', '最大光伏出力', '#f0a020', '🔆') +
+    scadaCard(peakGrid.toFixed(0), 'kW 峰值', '最大网购功率', '#f08030', '⚡') +
+    scadaCard(transLoad.toFixed(1)+'%', '2500kVA', '变压器负载率', transLoad>90?'#e04050':transLoad>70?'#f0a020':'#60d040', '🔌');
+
+  drawSCADASLD(d);
+  drawSCADAPowerChart(h);
+  drawSCADASOCChart(h);
+}
   drawSCADASLD(d);
   drawSCADAPowerChart(h);
   drawSCADASOCChart(h);
@@ -1710,6 +1756,8 @@ async function refreshLiveStation() {
   generateLiveLog(data, 0);
 }
 
+let prevLiveCars = new Map();  // car_id → {pile_idx, transition, framesLeft}
+
 function drawLiveCanvas(data, timeIdx) {
   const canvas = document.getElementById('lsCanvas');
   if (!canvas) return;
@@ -1717,27 +1765,49 @@ function drawLiveCanvas(data, timeIdx) {
   const h = canvas.height = canvas.clientHeight;
   const ctx = canvas.getContext('2d');
 
-  // MUST read snapshot FIRST, before drawing parking spots
+  // Read snapshot FIRST
   const snapshot = data.timeline?.[timeIdx] || data.timeline?.[0];
-  liveStationCars = snapshot?.piles_detail || [];
+  const curCars = snapshot?.piles_detail || [];
+  liveStationCars = curCars;
 
-  // Build quick lookup: which piles are occupied
-  const occupiedSet = new Set(liveStationCars.map(c => c.pile_idx));
+  // Build current car map
+  const curMap = new Map(curCars.map(c => [c.car_id, c]));
+
+  // Track new and departing cars for transition
+  const newCarIds = new Set();
+  curCars.forEach(c => { if (!prevLiveCars.has(c.car_id)) newCarIds.add(c.car_id); });
+
+  // Update prevLiveCars: remove departed, add new with transition state
+  const nextPrev = new Map();
+  curCars.forEach(c => {
+    const prev = prevLiveCars.get(c.car_id);
+    nextPrev.set(c.car_id, { pile_idx: c.pile_idx, transition: prev ? 'stable' : 'arriving', frame: 0 });
+  });
+  // Keep recently departed cars for fade-out (up to 3 frames)
+  prevLiveCars.forEach((v, id) => {
+    if (!curMap.has(id) && v.transition !== 'departed') {
+      nextPrev.set(id, { ...v, transition: 'departing', frame: 0 });
+    } else if (!curMap.has(id) && v.transition === 'departing' && (v.frame || 0) < 3) {
+      nextPrev.set(id, { ...v, frame: (v.frame || 0) + 1 });
+    }
+  });
+  prevLiveCars = nextPrev;
+
+  // Occupancy: current cars + recently departed (still fading)
+  const occupiedSet = new Set();
+  nextPrev.forEach((v, id) => {
+    if (v.transition !== 'departing' || (v.frame || 0) < 2) occupiedSet.add(v.pile_idx);
+  });
 
   // Background
-  ctx.fillStyle = '#0a1a10';
-  ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1a10'; ctx.fillRect(0, 0, w, h);
 
   // Road
-  ctx.fillStyle = '#1a1a1a';
-  ctx.fillRect(0, h*0.85, w, h*0.15);
-  ctx.strokeStyle = '#f0c040';
-  ctx.setLineDash([30, 15]);
-  ctx.lineWidth = 1.5;
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, h*0.85, w, h*0.15);
+  ctx.strokeStyle = '#f0c040'; ctx.setLineDash([30, 15]); ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.moveTo(0, h*0.88); ctx.lineTo(w, h*0.88); ctx.stroke();
   ctx.setLineDash([]);
 
-  // Parking lot grid
   const pileConfig = data.pile_config || [];
   const nCols = 8;
   const colW = w / (nCols + 1);
@@ -1745,92 +1815,73 @@ function drawLiveCanvas(data, timeIdx) {
 
   // Draw parking spots
   pileConfig.forEach((pile, i) => {
-    const col = i % nCols;
-    const row = Math.floor(i / nCols);
-    const cx = colW * (col + 1);
-    const cy = rowOffsets[Math.min(row, 2)];
-    const spotW = colW * 0.8;
-    const spotH = h * 0.2;
-
+    const col = i % nCols, row = Math.floor(i / nCols);
+    const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
+    const spotW = colW * 0.8, spotH = h * 0.2;
     const occupied = occupiedSet.has(i);
+
     ctx.fillStyle = occupied ? 'rgba(240,160,32,0.15)' : 'rgba(255,255,255,0.03)';
     ctx.strokeStyle = pile.type === '480kW' ? '#e04050' : '#4a8a4a';
     ctx.lineWidth = pile.type === '480kW' ? 2 : 1;
     ctx.fillRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
     ctx.strokeRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
-
-    // Pile label
     ctx.fillStyle = pile.type === '480kW' ? '#e04050' : '#6aaa6a';
-    ctx.font = '8px "Microsoft YaHei"';
-    ctx.textAlign = 'center';
+    ctx.font = '8px "Microsoft YaHei"'; ctx.textAlign = 'center';
     ctx.fillText(pile.id, cx, cy - spotH/2 - 4);
     ctx.fillText(pile.type, cx, cy + spotH/2 + 12);
-
-    // Connector icon
     ctx.fillStyle = occupied ? '#f0a020' : '#4a8a4a';
     ctx.fillRect(cx - 4, cy - spotH/2 + 4, 8, 14);
-    ctx.fillStyle = '#000';
-    ctx.fillRect(cx - 2, cy - spotH/2 + 6, 4, 10);
+    ctx.fillStyle = '#000'; ctx.fillRect(cx - 2, cy - spotH/2 + 6, 4, 10);
   });
 
-  // Draw cars in active sessions
-  if (snapshot?.piles_detail) {
-    snapshot.piles_detail.forEach(car => {
-      const pileIdx = car.pile_idx;
-      const col = pileIdx % nCols;
-      const row = Math.floor(pileIdx / nCols);
-      const cx = colW * (col + 1);
-      const cy = rowOffsets[Math.min(row, 2)];
-      const spotW = colW * 0.8;
-      const spotH = h * 0.2;
+  // Helper: draw a car
+  function drawCar(car, alpha, slideY) {
+    const pileIdx = car.pile_idx;
+    const col = pileIdx % nCols, row = Math.floor(pileIdx / nCols);
+    const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
+    const spotW = colW * 0.8, spotH = h * 0.2;
+    const carW = spotW * 0.7, carH = spotH * 0.65;
+    const carX = cx - carW/2;
+    const carY = cy - carH/2 - (slideY || 0);
 
-      // Car body
-      const carW = spotW * 0.7;
-      const carH = spotH * 0.65;
-      const carX = cx - carW/2;
-      const carY = cy - carH/2;
-
-      // Car shadow
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.fillRect(carX + 2, carY + 2, carW, carH);
-
-      // Car body
-      ctx.fillStyle = car.car_color || '#60a0d0';
-      ctx.fillRect(carX, carY, carW, carH);
-      // Car roof
-      ctx.fillStyle = 'rgba(0,0,0,0.25)';
-      ctx.fillRect(carX + carW*0.15, carY, carW*0.7, carH*0.6);
-      // Windows
-      ctx.fillStyle = 'rgba(100,180,240,0.5)';
-      ctx.fillRect(carX + carW*0.2, carY + 2, carW*0.25, carH*0.5);
-      ctx.fillRect(carX + carW*0.55, carY + 2, carW*0.25, carH*0.5);
-
-      // SOC progress bar on car
-      const barW = carW * 0.8;
-      const barH = 4;
-      const barX = carX + carW*0.1;
-      const barY = carY + carH + 2;
-      ctx.fillStyle = '#1a1a1a';
-      ctx.fillRect(barX, barY, barW, barH);
-      const socGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
-      socGrad.addColorStop(0, '#e04050');
-      socGrad.addColorStop(0.5, '#f0a020');
-      socGrad.addColorStop(1, '#60d040');
-      ctx.fillStyle = socGrad;
-      ctx.fillRect(barX, barY, barW * car.soc, barH);
-
-      // SOC text
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 7px "Microsoft YaHei"';
-      ctx.textAlign = 'center';
-      ctx.fillText((car.soc*100).toFixed(0) + '%', cx, barY - 2);
-
-      // Remaining time
-      ctx.fillStyle = '#8ab4d0';
-      ctx.font = '7px monospace';
-      ctx.fillText(car.remaining_min > 0 ? car.remaining_min.toFixed(0) + 'min' : '完成', cx, barY + 10);
-    });
+    ctx.globalAlpha = alpha;
+    // Shadow
+    ctx.fillStyle = 'rgba(0,0,0,0.4)'; ctx.fillRect(carX + 2, carY + 2, carW, carH);
+    // Body
+    ctx.fillStyle = car.car_color || '#60a0d0'; ctx.fillRect(carX, carY, carW, carH);
+    // Roof
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fillRect(carX + carW*0.15, carY, carW*0.7, carH*0.6);
+    // Windows
+    ctx.fillStyle = 'rgba(100,180,240,0.5)';
+    ctx.fillRect(carX + carW*0.2, carY + 2, carW*0.25, carH*0.5);
+    ctx.fillRect(carX + carW*0.55, carY + 2, carW*0.25, carH*0.5);
+    // SOC bar
+    const barW = carW * 0.8, barH = 4;
+    const barX = carX + carW*0.1, barY = carY + carH + 2;
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(barX, barY, barW, barH);
+    const socGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+    socGrad.addColorStop(0, '#e04050'); socGrad.addColorStop(0.5, '#f0a020'); socGrad.addColorStop(1, '#60d040');
+    ctx.fillStyle = socGrad; ctx.fillRect(barX, barY, barW * Math.min(1, Math.max(0, car.soc || 0)), barH);
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 7px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(((car.soc||0)*100).toFixed(0) + '%', cx, barY - 2);
+    ctx.fillStyle = '#8ab4d0'; ctx.font = '7px monospace';
+    ctx.fillText(car.remaining_min > 0 ? car.remaining_min.toFixed(0) + 'min' : '即将离开', cx, barY + 10);
+    ctx.globalAlpha = 1;
   }
+
+  // Draw cars: arriving cars slide in, departing fade out, stable at full opacity
+  nextPrev.forEach((state, carId) => {
+    const car = curMap.get(carId);
+    if (state.transition === 'arriving' && car) {
+      drawCar(car, 1, (2 - (state.frame || 0)) * 15);  // slide in from road
+    } else if (state.transition === 'stable' && car) {
+      drawCar(car, 1, 0);
+    } else if (state.transition === 'departing') {
+      // Keep showing recently departed car with fade
+      const fadeCar = liveStationCars.find(c => c.car_id === carId) || { pile_idx: state.pile_idx, car_color: '#888', soc: 1, remaining_min: 0 };
+      drawCar(fadeCar, Math.max(0, 1 - (state.frame || 0) * 0.4), -(state.frame || 0) * 10);
+    }
+  });
 
   // Legend
   ctx.fillStyle = '#60d040'; ctx.fillRect(16, 8, 10, 10);
@@ -1929,7 +1980,7 @@ function liveAnimLoop() {
   drawLiveCanvas(liveStationData, liveStationTime);
   generateLiveLog(liveStationData, liveStationTime);
   liveAnimFrame = requestAnimationFrame(() => {
-    setTimeout(() => liveAnimLoop(), 500);
+    setTimeout(() => liveAnimLoop(), 180);  // 180ms per minute = smooth 10.8s cycle
   });
 }
 

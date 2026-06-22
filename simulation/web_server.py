@@ -346,12 +346,40 @@ def simulate_mc_distribution(
     day_type: str = Query('workday', description="日类型: workday/weekend/holiday/spring_festival"),
     weather: str = Query('clear', description="天气: clear/partly_cloudy/cloudy/overcast/rain"),
     month: int = Query(6, description="月份 1-12"),
-    n_runs: int = Query(1000, description="MC仿真次数"),
+    n_runs: int = Query(400, description="MC仿真次数"),
 ):
-    """MC充电负荷分布仿真"""
+    """MC充电负荷分布仿真 (使用预计算MC数据, 快速响应)"""
+    # 优先使用缓存的MC summary数据 (预计算完整统计)
+    mc_summary = _cache.get('mc_summary', {})
+    if day_type in mc_summary:
+        ms = mc_summary[day_type]
+        weather_factor = WEATHER_CHARGING_COEFF.get(weather, 1.0)
+        month_factor = {1:0.88,2:0.80,3:1.00,4:1.03,5:1.15,6:1.02,7:1.08,8:1.08,9:1.02,10:1.20,11:0.97,12:0.92}.get(month, 1.0)
+        factor = weather_factor * month_factor
+        # 缓存的P50/P95是工作日晴天的基准, 按天气和月份系数缩放
+        p50_base = np.array(ms.get('hourly_p50', [0]*24))
+        p95_base = np.array(ms.get('hourly_p95', [0]*24))
+        peak_mean = ms.get('peak_mean', 0) * factor
+        peak_std = ms.get('peak_std', 0) * factor
+        daily_energy = ms.get('daily_energy_mean', 0) * factor
+        p50 = (p50_base * factor).tolist()
+        p95 = (p95_base * factor).tolist()
+        # 从P50/P95估算分位数
+        spread = (p95_base - p50_base) * factor
+        return {
+            'params': {'day_type': day_type, 'weather': weather, 'month': month, 'cached': True},
+            'hourly_p50': p50,
+            'hourly_p95': p95,
+            'hourly_p5': (p50_base * factor * 0.4).tolist(),
+            'hourly_p25': (p50_base * factor * 0.7).tolist(),
+            'hourly_p75': ((p50_base + spread * 0.5) * factor).tolist(),
+            'peak_mean': float(peak_mean),
+            'peak_std': float(peak_std),
+            'daily_energy_mean': float(daily_energy),
+        }
+    # 回退到实时仿真
     sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
     result = sim.simulate_scenario(day_type, weather, month, n_runs=n_runs)
-
     return {
         'params': {'day_type': day_type, 'weather': weather, 'month': month},
         'hourly_p50': result['p50'].tolist(),
@@ -515,31 +543,32 @@ def simulate_charging_station_live(
         # 统计总功率
         total_power = sum(s['charge_power'] for s in active_sessions)
 
-        # 每5分钟输出一次快照
-        if minute % 5 == 0 or minute == 59:
-            snap = []
-            for s in active_sessions:
-                snap.append({
-                    'pile': pile_types[s['pile_idx']]['id'],
-                    'pile_idx': s['pile_idx'],
-                    'pile_type': pile_types[s['pile_idx']]['type'],
-                    'car_id': s['car']['id'],
-                    'car_type': s['car']['type'],
-                    'car_color': s['car']['color'],
-                    'soc': s['car'].get('current_soc', s['car']['start_soc']),
-                    'remaining_min': s['car'].get('remaining_min', s['est_duration']),
-                    'charge_power': s['charge_power'],
-                })
-            minutes.append({
-                'minute': minute,
-                'active_sessions': len(active_sessions),
-                'waiting': len(waiting_queue),
-                'total_power_kw': round(total_power, 1),
-                'piles_detail': snap,
+        # 逐分钟输出快照 (60个时间点, 确保前端动画连续)
+        snap = []
+        for s in active_sessions:
+            snap.append({
+                'pile': pile_types[s['pile_idx']]['id'],
+                'pile_idx': s['pile_idx'],
+                'pile_type': pile_types[s['pile_idx']]['type'],
+                'car_id': s['car']['id'],
+                'car_type': s['car']['type'],
+                'car_color': s['car']['color'],
+                'soc': s['car'].get('current_soc', s['car']['start_soc']),
+                'remaining_min': s['car'].get('remaining_min', s['est_duration']),
+                'charge_power': s['charge_power'],
             })
+        minutes.append({
+            'minute': minute,
+            'active_sessions': len(active_sessions),
+            'waiting': len(waiting_queue),
+            'total_power_kw': round(total_power, 1),
+            'piles_detail': snap,
+            'arrivals': n_arrivals,
+            'departures': len([s for s in active_sessions if s['car'].get('current_soc', 0) >= s['car']['target_soc'] - 0.01]),
+        })
 
     # 小时总览
-    total_energy = sum(m['total_power_kw'] for m in minutes) / 12  # 5分钟间隔 -> kWh近似
+    total_energy = sum(m['total_power_kw'] for m in minutes) / 60  # 60分钟, kW*min/60 ≈ kWh
 
     return {
         'hour': hour,
