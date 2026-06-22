@@ -2795,7 +2795,6 @@ const renderers = {
 function renderTab(tab) {
   disposeCharts();
   if (scadaProTimer) { clearInterval(scadaProTimer); scadaProPlaying = false; }
-  if (scadaTimer) { clearInterval(scadaTimer); scadaPlaying = false; }
   if (liveAnimActive) { liveAnimActive = false;
     const btn = document.getElementById('lsAnimBtn');
     if (btn) { btn.textContent = '▶ 实时动画'; btn.style.background = 'var(--accent2)'; }
