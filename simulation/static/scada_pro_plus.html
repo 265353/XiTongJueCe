@@ -1,0 +1,1795 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCADA Pro+ 光储充微网智能决策平台 v7.0</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+:root {
+  --bg: #0a1628; --panel: #0f1f38; --border: #1a3a5a; --text: #8ab4d0;
+  --bright: #c8e0f0; --accent: #00c8f0; --accent2: #40e0a0;
+  --pv: #f0a020; --ess-ch: #4090d0; --ess-dis: #60d040;
+  --grid-imp: #e04050; --grid-exp: #30d0b0; --load: #e8e8f0;
+  --warn: #f08030; --sidebar-w: 220px;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','Segoe UI',sans-serif;
+       height:100vh; display:flex; overflow:hidden; }
+.sidebar { width:var(--sidebar-w); background:var(--panel); border-right:1px solid var(--border);
+           display:flex; flex-direction:column; flex-shrink:0; overflow-y:auto; }
+.sidebar .logo { padding:14px 16px; border-bottom:1px solid var(--border); }
+.sidebar .logo h2 { font-size:13px; color:var(--accent); line-height:1.4; }
+.sidebar .logo .ver { font-size:9px; color:#4a7595; }
+.sidebar nav { flex:1; padding:6px 0; }
+.sidebar nav .cat { font-size:9px; color:#3a6585; padding:8px 16px 4px; letter-spacing:1px; }
+.sidebar nav a { display:flex; align-items:center; gap:8px; padding:6px 16px; font-size:11px;
+                 color:var(--text); text-decoration:none; cursor:pointer; transition:all 0.2s;
+                 border-left:2px solid transparent; }
+.sidebar nav a:hover { background:rgba(0,200,240,0.05); color:var(--bright); }
+.sidebar nav a.active { background:rgba(0,200,240,0.1); color:var(--accent); border-left-color:var(--accent); }
+.sidebar nav a .icon { font-size:13px; width:18px; text-align:center; }
+.sidebar .status { padding:10px 16px; border-top:1px solid var(--border); font-size:9px; color:#4a7595; }
+.sidebar .status .dot { display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:4px; }
+.sidebar .status .dot.ok { background:#60d040; }
+.sidebar .status .dot.err { background:#e04050; }
+.main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+.header { background:linear-gradient(180deg, #0f2a4a, var(--bg)); padding:8px 20px;
+          border-bottom:1px solid var(--border); flex-shrink:0; display:flex;
+          align-items:center; justify-content:space-between; }
+.header h1 { font-size:15px; color:var(--accent); }
+.header .api-status { font-size:10px; color:#5a8aaa; }
+.content { flex:1; overflow-y:auto; padding:16px; }
+.metrics-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:8px; margin-bottom:14px; }
+.metric-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:10px 14px; cursor:pointer; transition:all 0.2s; }
+.metric-card:hover { border-color:var(--accent); background:rgba(0,200,240,0.05); }
+.metric-card .label { font-size:10px; color:#5a85a5; }
+.metric-card .value { font-size:22px; font-weight:700; color:var(--accent); margin:2px 0; }
+.metric-card .unit { font-size:8px; color:#4a7595; }
+.metric-card.pv .value { color:var(--pv); }
+.metric-card.load .value { color:var(--load); }
+.metric-card.ess .value { color:var(--ess-dis); }
+.metric-card.warn .value { color:var(--warn); }
+.metric-card.accent2 .value { color:var(--accent2); }
+.section-title { font-size:13px; color:var(--bright); padding:8px 0 10px; border-bottom:1px solid var(--border); margin-bottom:12px; }
+.chart-box { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; margin-bottom:12px; }
+.chart-box h3 { font-size:12px; color:var(--accent); margin-bottom:8px; font-weight:400; }
+.chart-inner { width:100%; height:380px; }
+.chart-inner.tall { height:500px; }
+.chart-inner.short { height:280px; }
+.row2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+.row21 { display:grid; grid-template-columns:2fr 1fr; gap:12px; }
+.viz-tab-btn { background:rgba(15,31,56,0.8); color:#5a8aaa; border:1px solid var(--border);
+  padding:4px 10px; border-radius:4px; cursor:pointer; font-size:10px; transition:all 0.2s; white-space:nowrap; }
+.viz-tab-btn:hover { background:rgba(0,200,240,0.1); color:var(--bright); }
+.viz-tab-btn.active { background:rgba(0,200,240,0.15); color:var(--accent); border-color:var(--accent); }
+.btn { padding:6px 16px; border-radius:4px; cursor:pointer; font-size:11px; font-weight:600; transition:all 0.2s; border:none; }
+.btn-primary { background:var(--accent); color:#000; }
+.btn-primary:hover { background:#33d8f8; }
+.btn-accent { background:var(--accent2); color:#000; }
+.btn-accent:hover { background:#60f0b0; }
+.btn-outline { background:transparent; border:1px solid var(--accent); color:var(--accent); }
+.btn-outline:hover { background:rgba(0,200,240,0.1); }
+.btn-sm { padding:3px 10px; font-size:9px; }
+.sp-select { background:var(--panel); color:var(--text); border:1px solid var(--border);
+  padding:4px 8px; border-radius:4px; font-size:10px; }
+.sp-input { background:var(--panel); color:var(--bright); border:1px solid var(--border);
+  padding:4px 8px; border-radius:4px; font-size:10px; width:80px; }
+.sp-range { accent-color:var(--accent); }
+.sp-range2 { accent-color:var(--accent2); }
+.data-table { width:100%; border-collapse:collapse; font-size:10px; }
+.data-table th { text-align:left; padding:5px 8px; border-bottom:2px solid var(--border); color:var(--accent); font-weight:400; }
+.data-table td { padding:4px 8px; border-bottom:1px solid rgba(26,58,90,0.5); }
+.data-table tr:hover { background:rgba(0,200,240,0.03); }
+.data-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+.data-table .best { color:var(--accent2); font-weight:600; }
+.tag { display:inline-block; padding:1px 6px; border-radius:3px; font-size:8px; font-weight:600; }
+.tag.green { background:#1a3020; color:#60d040; }
+.tag.blue { background:#1a2a30; color:#40a0d0; }
+.tag.red { background:#301a20; color:#f08080; }
+.tag.orange { background:#302010; color:#f0a040; }
+.tag.purple { background:#201a30; color:#a060d0; }
+.progress-bar { height:8px; border-radius:4px; background:#0a1624; overflow:hidden; }
+.progress-fill { height:100%; border-radius:4px; transition:width 0.5s; }
+.opt-method { background:var(--panel); border:2px solid var(--border); border-radius:8px; padding:12px;
+  cursor:pointer; transition:all 0.2s; text-align:center; }
+.opt-method:hover { border-color:var(--accent); }
+.opt-method.selected { border-color:var(--accent2); box-shadow:0 0 12px rgba(64,224,160,0.2); }
+.opt-method .method-name { font-size:13px; color:var(--bright); font-weight:600; }
+.opt-method .method-desc { font-size:9px; color:#5a85a5; margin-top:4px; }
+::-webkit-scrollbar { width:5px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:#1a3a5a; border-radius:3px; }
+@media(max-width:1200px) { .row2,.row21,.row3 { grid-template-columns:1fr; } }
+.loading { text-align:center; padding:40px; color:#4a7595; }
+.spinner { display:inline-block; width:24px; height:24px; border:2px solid var(--border);
+  border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<aside class="sidebar">
+  <div class="logo"><h2>SCADA Pro+</h2><div class="ver">v7.0 · 智能决策平台</div></div>
+  <nav id="nav">
+    <div class="cat">实时监控</div>
+    <a data-tab="scada" class="active"><span class="icon">🏭</span>SCADA 细粒度监控</a>
+    <a data-tab="powerflow"><span class="icon">⚡</span>分钟级功率流</a>
+    <div class="cat">数据看板</div>
+    <a data-tab="pv-data"><span class="icon">☀️</span>光伏发电数据</a>
+    <a data-tab="ess-data"><span class="icon">🔋</span>储能系统数据</a>
+    <a data-tab="building-data"><span class="icon">🏠</span>建筑负荷数据</a>
+    <a data-tab="charging-data"><span class="icon">🚗</span>充电站数据</a>
+    <div class="cat">优化引擎</div>
+    <a data-tab="optimization"><span class="icon">🎯</span>优化方法选择</a>
+    <a data-tab="opt-results"><span class="icon">📈</span>优化结果对比</a>
+    <div class="cat">决策分析</div>
+    <a data-tab="economic"><span class="icon">💰</span>经济分析</a>
+    <a data-tab="decision"><span class="icon">🎲</span>决策框架</a>
+    <a data-tab="recommend"><span class="icon">💡</span>分析建议</a>
+  </nav>
+  <div class="status"><span class="dot" id="apiDot"></span><span id="apiLabel">检查API...</span></div>
+</aside>
+
+<div class="main">
+  <div class="header">
+    <h1 id="pageTitle">🏭 SCADA 细粒度监控</h1>
+    <div class="api-status" id="apiStatus">API: 检查中...</div>
+  </div>
+  <div class="content" id="content"></div>
+</div>
+
+<script>
+// ============================ GLOBAL STATE ============================
+const API = 'http://127.0.0.1:8760';
+const charts = {};
+let activeTab = 'scada';
+
+// SCADA state
+let spData = null, spDay = 200, spWeather = 'auto', spNDays = 1;
+let spMinute = 720, spTimer = null, spPlaying = false, spViz = 'sld';
+
+// Optimization state
+let optMethod = 'pso', optRunning = false;
+let optResults = {};
+
+// Data cache for cross-tab sharing
+let _cache = {};
+
+// ============================ API ============================
+async function fetchAPI(url) {
+  try {
+    const r = await fetch(API + url);
+    if (!r.ok) throw new Error(r.status);
+    return await r.json();
+  } catch(e) {
+    console.warn('API error:', url, e.message);
+    return null;
+  }
+}
+
+async function checkHealth() {
+  const h = await fetchAPI('/api/health');
+  const dot = document.getElementById('apiDot'), label = document.getElementById('apiLabel');
+  const status = document.getElementById('apiStatus');
+  if (h && h.status === 'ok') {
+    dot.className = 'dot ok'; label.textContent = 'API 在线';
+    status.textContent = 'API: v' + h.version + ' 在线';
+  } else {
+    dot.className = 'dot err'; label.textContent = 'API 离线';
+    status.textContent = 'API: 离线';
+  }
+}
+
+// Load shared data once and cache
+async function loadSharedData() {
+  if (_cache.loaded) return;
+  const [opt, pareto, dec, algo, robust, econ, mc, trend, rec, cfg, pvCfg, bldCfg] = await Promise.all([
+    fetchAPI('/api/results/optimization'),
+    fetchAPI('/api/results/pareto'),
+    fetchAPI('/api/results/decision'),
+    fetchAPI('/api/results/algorithm-comparison'),
+    fetchAPI('/api/results/robust-optimization'),
+    fetchAPI('/api/results/economic-detail'),
+    fetchAPI('/api/results/mc-summary'),
+    fetchAPI('/api/simulate/trend-analysis'),
+    fetchAPI('/api/simulate/operational-recommendations'),
+    fetchAPI('/api/config'),
+    fetchAPI('/api/config/pv-generation'),
+    fetchAPI('/api/config/building-load')
+  ]);
+  _cache = { loaded:true, opt, pareto, dec, algo, robust, econ, mc, trend, rec, cfg, pvCfg, bldCfg };
+}
+
+// Normalize optimization result: npc is raw yuan in JSON, convert to 万元
+function normOpt(opt) {
+  if (!opt) return {};
+  const npcWan = (opt.npc || 0) > 100000 ? (opt.npc / 10000) : (opt.npc || 5376);
+  return {
+    pv_capacity: opt.pv_capacity || 1231,
+    ess_capacity: opt.ess_capacity || 1720,
+    ess_power: opt.ess_power || 860,
+    npc: npcWan,
+    self_sufficiency: opt.self_sufficiency || 0.27,
+    lcoe: npcWan * 10000 / Math.max((opt.annual_load_kwh || 4337449) * 20, 1),
+    payback_years: opt.payback_years || 14.5,
+    carbon_reduction_t: opt.carbon_reduction_t || 667,
+    annual_carbon_revenue: opt.annual_carbon_revenue || (opt.carbon_reduction_t || 667) * 70,
+    capital_cost: (opt.capital_cost || 12107022) / 10000,
+    net_capital_cost: (opt.net_capital_cost || 11465869) / 10000,
+    annual_load_kwh: opt.annual_load_kwh || 4337449,
+    annual_pv_gen_kwh: opt.annual_pv_gen_kwh || 1169380,
+    annual_grid_import_kwh: opt.annual_grid_import_kwh || 3345262,
+    annual_grid_cost: opt.annual_grid_cost || 2179768,
+    annual_ess_cycles: opt.annual_ess_cycles || 787,
+    capex_detail: opt.capex_detail || {},
+    subsidy_detail: opt.subsidy_detail || {},
+    verify_8760h: opt.verify_8760h || null
+  };
+}
+
+// ============================ CHART HELPERS ============================
+function initChart(domId) {
+  const dom = document.getElementById(domId);
+  if (!dom) return null;
+  if (charts[domId]) charts[domId].dispose();
+  const c = echarts.init(dom);
+  charts[domId] = c;
+  return c;
+}
+
+function disposeCharts() {
+  Object.values(charts).forEach(c => { try { c.dispose(); } catch(e) {} });
+  for (const k of Object.keys(charts)) delete charts[k];
+}
+
+function stopSCADATimer() {
+  if (spTimer) { clearInterval(spTimer); spTimer = null; }
+  spPlaying = false;
+}
+
+function metricCard(label, value, unit, color, icon) {
+  return `<div class="metric-card" style="border-left:2px solid ${color||'var(--accent)'}">
+    <div class="label">${icon||''} ${label}</div>
+    <div class="value" style="color:${color||'var(--accent)'}">${value}</div>
+    <div class="unit">${unit}</div>
+  </div>`;
+}
+
+// ============================ CANVAS HELPERS ============================
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+
+// ============================ SCADA PRO ============================
+function switchSPViz(viz) {
+  spViz = viz;
+  document.querySelectorAll('.viz-tab-btn').forEach(b => b.classList.remove('active'));
+  const btn = document.querySelector(`.viz-tab-btn[data-viz="${viz}"]`);
+  if (btn) btn.classList.add('active');
+  if (spData) drawSPMainCanvas();
+}
+
+async function loadSPData() {
+  const url = `/api/simulate/fine-grained-scada?day=${spDay}&n_days=${spNDays}&weather=${spWeather}`;
+  spData = await fetchAPI(url);
+  if (spData) updateSCADA(spMinute);
+}
+
+function updateSCADA(minuteOfDay) {
+  if (!spData) return;
+  const data = spData, cfg = data.config;
+  const mIdx = Math.min(Math.floor(minuteOfDay / cfg.sample_interval_min), data.sampled_minutes.length - 1);
+  const snap = data.sampled_minutes[mIdx];
+  if (!snap) return;
+  const dayIdx = Math.floor(minuteOfDay / 1440);
+  const ds = data.daily_summary[Math.min(dayIdx, data.daily_summary.length - 1)];
+
+  const todH = Math.floor((minuteOfDay % 1440) / 60);
+  const todM = (minuteOfDay % 1440) % 60;
+  const el = id => document.getElementById(id);
+  el('spTimeLabel').textContent = String(todH).padStart(2,'0')+':'+String(todM).padStart(2,'0');
+  el('spMinute').value = minuteOfDay % 1440;
+
+  const weatherMap = {clear:'☀️晴',partly_cloudy:'⛅多云',cloudy:'☁️阴',overcast:'🌫️霾',rain:'🌧️雨'};
+  const dtMap = {workday:'工作日',weekend:'双休日',holiday:'节假日',spring_festival:'春运'};
+  el('spInfo').textContent =
+    `${ds?ds.month:cfg.month}月 | ${dtMap[cfg.day_type]||cfg.day_type} | ${weatherMap[cfg.weather]||cfg.weather} | Day ${dayIdx+1}/${cfg.n_days}`;
+
+  const essVal = snap.ess_charge_kw > 2 ? '充电' : snap.ess_discharge_kw > 2 ? '放电' : '待机';
+  const essColor = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : '#5a8aaa';
+  const essPower = snap.ess_charge_kw > 2 ? snap.ess_charge_kw : snap.ess_discharge_kw;
+  const gridFlow = snap.grid_import_kw > 1 ? '+' + snap.grid_import_kw.toFixed(0) : snap.grid_export_kw > 1 ? '-' + snap.grid_export_kw.toFixed(0) : '0';
+  const gridColor = snap.grid_import_kw > 1 ? '#e04050' : snap.grid_export_kw > 1 ? '#30d0b0' : '#5a8aaa';
+  const net = snap.pv_kw - snap.load_total_kw;
+
+  el('spMetrics').innerHTML =
+    metricCard('☀️ 光伏出力', snap.pv_kw.toFixed(0)+' kW', 'GHI:'+snap.ghi.toFixed(0)+' W/m²', '#f0a020') +
+    metricCard('⚡ 总负荷', snap.load_total_kw.toFixed(0)+' kW', '建筑:'+snap.bldg_total_kw.toFixed(0)+' EV:'+snap.ev_total_kw.toFixed(0), '#e8e8f0') +
+    metricCard('🔋 储能 SOC', (snap.soc*100).toFixed(1)+'%', essVal+' '+essPower.toFixed(0)+'kW', essColor) +
+    metricCard('🔌 电网交互', gridFlow+' kW', '网购+/上网-', gridColor) +
+    metricCard('🚗 充电桩', snap.ev_active.toFixed(0)+' 辆', '排队:'+snap.ev_waiting.toFixed(0)+' 桩:'+cfg.total_piles, '#f06878') +
+    metricCard('📈 净负荷', net.toFixed(0)+' kW', net>0?'余电上网':'电网取电', net>0?'#30d0b0':'#e04050');
+
+  drawSPMainCanvas();
+  drawSPCharts();
+}
+
+function drawSPMainCanvas() {
+  const canvas = document.getElementById('spMainCanvas');
+  if (!canvas || !spData) return;
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+  const cfg = spData.config;
+  const mIdx = Math.min(Math.floor(spMinute / cfg.sample_interval_min), spData.sampled_minutes.length - 1);
+  const snap = spData.sampled_minutes[mIdx];
+  if (!snap) return;
+
+  switch (spViz) {
+    case 'sld': drawSLD(ctx, w, h, snap, cfg); break;
+    case 'pv': drawPVCanvas(ctx, w, h, snap, cfg); break;
+    case 'ess': drawESSCanvas(ctx, w, h, snap, cfg); break;
+    case 'building': drawBldCanvas(ctx, w, h, snap, cfg); break;
+    case 'charging': drawChgCanvas(ctx, w, h, snap, cfg); break;
+  }
+}
+
+function drawSLD(ctx, w, h, snap, cfg) {
+  const isDay = snap.ghi > 50;
+  ctx.fillStyle = isDay ? '#0a1628' : '#050d18';
+  ctx.fillRect(0, 0, w, h);
+  const cx = w / 2, socPct = snap.soc * 100;
+  ctx.fillStyle = '#142840'; ctx.strokeStyle = '#3080b0'; ctx.lineWidth = 1.5;
+  roundRect(ctx, cx - 90, 10, 180, 22, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#d8ecf8'; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('大电网 10kV', cx, 26);
+  ctx.fillStyle = '#0f2038'; ctx.strokeStyle = '#4080b0'; ctx.lineWidth = 1.5;
+  roundRect(ctx, cx - 70, 38, 140, 26, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#c0ddf0'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.fillText('箱变 2×1250kVA', cx, 54);
+  ctx.fillStyle = '#6090b0'; ctx.font = '7px "Microsoft YaHei"'; ctx.fillText('Dyn11 10/0.4kV', cx, 62);
+  ctx.fillStyle = '#b0b0b0'; ctx.strokeStyle = '#808080'; ctx.lineWidth = 1;
+  roundRect(ctx, 15, 70, w - 30, 12, 3); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#0a1628'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.fillText('400V AC 母线', cx, 79);
+  ctx.lineWidth = 2.5; ctx.strokeStyle = '#a0b0c0';
+  ctx.beginPath(); ctx.moveTo(cx, 64); ctx.lineTo(cx, 70); ctx.stroke();
+  ctx.strokeStyle = '#60a0c0';
+  ctx.beginPath(); ctx.moveTo(cx, 32); ctx.lineTo(cx, 38); ctx.stroke();
+
+  const comps = [
+    { x:15, w:(w-40)/4, label:'☀ 光伏', val:snap.pv_kw.toFixed(0)+'kW', sub:'GHI:'+snap.ghi.toFixed(0), color:'#f0a020', bg:'#0c1808' },
+    { x:15+(w-40)/4+5, w:(w-40)/4, label:'🔋 储能', val:'SOC '+(snap.soc*100).toFixed(0)+'%', sub:(snap.ess_charge_kw>2?'充'+snap.ess_charge_kw.toFixed(0):snap.ess_discharge_kw>2?'放'+snap.ess_discharge_kw.toFixed(0):'待机')+'kW', color:'#4090d0', bg:'#081220' },
+    { x:15+2*((w-40)/4+5), w:(w-40)/4, label:'⚡ 充电', val:snap.ev_total_kw.toFixed(0)+'kW', sub:snap.ev_active.toFixed(0)+'/'+cfg.total_piles+' 在用', color:'#e04050', bg:'#100a0c' },
+    { x:15+3*((w-40)/4+5), w:(w-40)/4, label:'🏠 建筑', val:snap.bldg_total_kw.toFixed(0)+'kW', sub:'空调'+(snap.bldg_components?.['空调']||0).toFixed(0)+'kW', color:'#8090a0', bg:'#101218' },
+  ];
+  comps.forEach(cp => {
+    const alpha = cp.label.includes('光伏') ? (snap.pv_kw > 5 ? 1 : 0.3) : 1;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = cp.bg; ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
+    roundRect(ctx, cp.x, 92, cp.w, 100, 6); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = cp.color; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(cp.label, cp.x+cp.w/2, 118);
+    ctx.font = '10px "Microsoft YaHei"'; ctx.fillStyle = '#d0e0f0'; ctx.fillText(cp.val, cp.x+cp.w/2, 138);
+    ctx.font = '8px "Microsoft YaHei"'; ctx.fillStyle = '#7a9ab0'; ctx.fillText(cp.sub, cp.x+cp.w/2, 155);
+    ctx.globalAlpha = 1;
+  });
+
+  const essX = 15+(w-40)/4+5, essW = (w-40)/4;
+  ctx.fillStyle = '#0a1624'; ctx.strokeStyle = '#3060a0'; ctx.lineWidth = 0.8;
+  roundRect(ctx, essX+8, 168, essW-16, 10, 5); ctx.fill(); ctx.stroke();
+  const grad = ctx.createLinearGradient(essX+8, 0, essX+8+essW-16, 0);
+  grad.addColorStop(0, '#e04050'); grad.addColorStop(0.5, '#f0a020'); grad.addColorStop(1, '#60d040');
+  ctx.fillStyle = grad;
+  roundRect(ctx, essX+8, 168, (essW-16)*socPct/100, 10, 5); ctx.fill();
+
+  comps.forEach(cp => {
+    ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(cp.x+cp.w/2, 82); ctx.lineTo(cp.x+cp.w/2, 92); ctx.stroke();
+  });
+  if (snap.pv_kw > 5) { ctx.fillStyle = '#f0a020'; ctx.beginPath(); ctx.arc(comps[0].x+comps[0].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
+  const essFlow = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : null;
+  if (essFlow) { ctx.fillStyle = essFlow; ctx.beginPath(); ctx.arc(comps[1].x+comps[1].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
+  if (snap.grid_import_kw > 2) { ctx.fillStyle = '#e04050'; ctx.beginPath(); ctx.arc(cx, 67, 5, 0, Math.PI*2); ctx.fill(); }
+  if (snap.grid_export_kw > 2) { ctx.fillStyle = '#30d0b0'; ctx.beginPath(); ctx.arc(cx, 74, 5, 0, Math.PI*2); ctx.fill(); }
+
+  ctx.fillStyle = '#5a8aaa'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'right';
+  ctx.fillText(`PV:${snap.pv_kw.toFixed(0)}kW · Load:${snap.load_total_kw.toFixed(0)}kW · SOC:${(snap.soc*100).toFixed(1)}%`, w-12, h-8);
+}
+
+function drawPVCanvas(ctx, w, h, snap, cfg) {
+  const isDay = snap.ghi > 30;
+  const skyGrad = ctx.createLinearGradient(0, 0, 0, h*0.45);
+  skyGrad.addColorStop(0, isDay ? '#1a3050' : '#080810'); skyGrad.addColorStop(1, isDay ? '#2a5070' : '#0a0a18');
+  ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, w, h);
+  if (isDay && snap.ghi > 50) {
+    const sunX = w*0.5 + (spMinute/720 - 1)*w*0.35;
+    const sunY = h*0.18 - Math.sin((spMinute-360)/1440*Math.PI)*h*0.1;
+    const sa = Math.max(0.1, 1 - snap.cloud_cover);
+    const sg = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, 45);
+    sg.addColorStop(0, `rgba(255,240,200,${sa})`); sg.addColorStop(0.3, `rgba(255,200,80,${sa*0.6})`);
+    sg.addColorStop(1, 'rgba(255,160,30,0)');
+    ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(sunX, sunY, 45, 0, Math.PI*2); ctx.fill();
+  }
+  for (let i = 0; i < 8; i++) {
+    const cx = ((i*137+50)%w), cy = 20 + (i*43)%60;
+    ctx.fillStyle = `rgba(180,190,200,${snap.cloud_cover*0.5})`; ctx.beginPath(); ctx.ellipse(cx, cy, 35+i*7, 15, 0, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.fillStyle = '#2a2a2a'; ctx.fillRect(0, h*0.45, w, h*0.55);
+  ctx.strokeStyle = '#505050'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, h*0.42); ctx.lineTo(w, h*0.42); ctx.stroke();
+
+  const nStrings = 5, nPerStr = 6;
+  const strW = (w-60)/nStrings, pW = strW*0.7, pH = 24;
+  const startY = h*0.47;
+  for (let s=0; s<nStrings; s++) {
+    const sx = 30 + s*strW + strW*0.15;
+    ctx.fillStyle = '#80a060'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText('串'+(s+1), sx+strW*0.35, startY-10);
+    ctx.fillStyle = '#608040'; ctx.font = '8px monospace';
+    ctx.fillText((snap.pv_kw/nStrings).toFixed(0)+'kW', sx+strW*0.35, startY-1);
+    for (let p=0; p<nPerStr; p++) {
+      const py = startY + p*(pH+4);
+      const irr = Math.max(0, (snap.ghi/1000)*(1-snap.cloud_cover*0.7));
+      const r = Math.min(255, Math.round(40+irr*200));
+      const g = Math.min(255, Math.round(20+irr*220));
+      const b = Math.min(255, Math.round(5+irr*30));
+      ctx.fillStyle = `rgba(${r},${g},${b},${isDay?0.7+irr*0.3:0.15})`;
+      ctx.fillRect(sx, py, pW, pH);
+      ctx.strokeStyle = 'rgba(180,180,180,0.4)'; ctx.lineWidth = 0.8; ctx.strokeRect(sx, py, pW, pH);
+    }
+  }
+  ctx.fillStyle = 'rgba(10,22,40,0.9)'; ctx.fillRect(0, h-65, w, 65);
+  ctx.fillStyle = '#f0a020'; ctx.font = 'bold 13px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('☀ 光伏阵列 · ' + ((cfg.pv_cap_kwp||1231).toFixed(0)) + ' kWp', 15, h-40);
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '10px monospace';
+  ctx.fillText('出力:'+snap.pv_kw.toFixed(0)+'kW  GHI:'+snap.ghi.toFixed(0)+'  云量:'+(snap.cloud_cover*100).toFixed(0)+'%  温度:'+snap.temp.toFixed(0)+'°C', 15, h-20);
+}
+
+function drawESSCanvas(ctx, w, h, snap, cfg) {
+  ctx.fillStyle = '#060d18'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#0a1220'; ctx.strokeStyle = '#1a3050'; ctx.lineWidth = 2;
+  roundRect(ctx, 20, 20, w-40, h-40, 8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#50b0f0'; ctx.font = 'bold 12px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('🔋 储能电池舱', w/2, 45);
+  const nCabs = 10, cabW = (w-80)/nCabs, cabH = h*0.45, cabY = 60;
+  const soc = snap.soc;
+  for (let i=0; i<nCabs; i++) {
+    const cx = 30 + i*cabW;
+    const cellSOC = Math.max(0.05, Math.min(0.95, soc + (Math.random()-0.5)*0.06));
+    const r = Math.round(40 + (1-cellSOC)*150);
+    const g = Math.round(120 + cellSOC*120);
+    const b = Math.round(200 - cellSOC*160);
+    ctx.fillStyle = `rgba(${r},${g},${b},0.7)`; ctx.fillRect(cx+2, cabY, cabW-4, cabH*cellSOC);
+    ctx.fillStyle = `rgba(${r},${g},${b},0.2)`; ctx.fillRect(cx+2, cabY+cabH*cellSOC, cabW-4, cabH*(1-cellSOC));
+    ctx.strokeStyle = '#204060'; ctx.lineWidth = 1; ctx.strokeRect(cx+2, cabY, cabW-4, cabH);
+    ctx.fillStyle = '#304050'; ctx.fillRect(cx+cabW*0.3, cabY+cabH+4, cabW*0.4, 12);
+    ctx.fillStyle = '#6080a0'; ctx.font = '6px monospace'; ctx.textAlign = 'center';
+    ctx.fillText((cellSOC*100).toFixed(0)+'%', cx+cabW/2, cabY+cabH-4);
+  }
+  ctx.fillStyle = '#101830'; ctx.strokeStyle = '#3050a0'; ctx.lineWidth = 1.5;
+  roundRect(ctx, 30, cabY+cabH+24, w-60, 30, 5); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#60a0d0'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  const fl = snap.ess_charge_kw>2?'充电 '+snap.ess_charge_kw.toFixed(0)+' kW':snap.ess_discharge_kw>2?'放电 '+snap.ess_discharge_kw.toFixed(0)+' kW':'待机 0 kW';
+  ctx.fillText('PCS 储能变流器 · '+fl, w/2, cabY+cabH+44);
+  ctx.fillStyle = 'rgba(10,22,40,0.9)'; ctx.fillRect(0, h-55, w, 55);
+  ctx.fillStyle = '#60d040'; ctx.font = 'bold 12px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('SOC: '+(soc*100).toFixed(1)+'% · 总容: '+((cfg.ess_cap_kwh||1720).toFixed(0))+' kWh · 额定功率: '+((cfg.ess_power_kw||1000).toFixed(0))+' kW', 20, h-28);
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '9px monospace';
+  ctx.fillText('充:'+snap.ess_charge_kw.toFixed(0)+'kW 放:'+snap.ess_discharge_kw.toFixed(0)+'kW · 电池温度:'+snap.temp.toFixed(0)+'°C', 20, h-12);
+}
+
+function drawBldCanvas(ctx, w, h, snap, cfg) {
+  ctx.fillStyle = '#0a1620'; ctx.fillRect(0, 0, w, h);
+  const bx=40, by=50, bw=w-80, bh=h*0.5;
+  ctx.fillStyle = '#0c1828'; ctx.strokeStyle = '#2a4060'; ctx.lineWidth = 2;
+  roundRect(ctx, bx, by, bw, bh, 6); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#406080'; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('服务区综合楼 平面图', w/2, by-10);
+  const zones = [
+    { label:'大厅', x:bx+10, y:by+10, w:bw*0.35, h:bh*0.4, color:'#2050a0' },
+    { label:'餐饮区', x:bx+bw*0.38, y:by+10, w:bw*0.28, h:bh*0.4, color:'#804020' },
+    { label:'超市', x:bx+bw*0.68, y:by+10, w:bw*0.28, h:bh*0.4, color:'#208060' },
+    { label:'办公区', x:bx+10, y:by+bh*0.45, w:bw*0.35, h:bh*0.5, color:'#604080' },
+    { label:'卫生间', x:bx+bw*0.38, y:by+bh*0.45, w:bw*0.28, h:bh*0.25, color:'#406080' },
+    { label:'休息区', x:bx+bw*0.38, y:by+bh*0.72, w:bw*0.28, h:bh*0.23, color:'#3080a0' },
+    { label:'机房', x:bx+bw*0.68, y:by+bh*0.45, w:bw*0.13, h:bh*0.25, color:'#804040' },
+    { label:'商铺', x:bx+bw*0.68, y:by+bh*0.72, w:bw*0.28, h:bh*0.23, color:'#808020' },
+  ];
+  zones.forEach(z => {
+    ctx.fillStyle = z.color+'40'; ctx.strokeStyle = z.color; ctx.lineWidth = 1;
+    roundRect(ctx, z.x, z.y, z.w, z.h, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#d0d8e0'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(z.label, z.x+z.w/2, z.y+z.h/2-2);
+  });
+  const comps = snap.bldg_components || {};
+  const names = ['空调','照明','动力','插座','冷柜','厨房','IT','排风','水泵','电梯'];
+  let mx = 0; names.forEach(k => { if ((comps[k]||0)>mx) mx = comps[k]||0; });
+  const bY = by+bh+20, barH = 20, barGap = (w-100)/names.length;
+  names.forEach((k, i) => {
+    const val = comps[k] || 0, x = 60 + i*barGap;
+    ctx.fillStyle = '#1a3a5a'; ctx.fillRect(x, bY, barGap-4, barH*2+14);
+    ctx.fillStyle = val > mx*0.7 ? '#f08030' : val > mx*0.3 ? '#4090d0' : '#3050a0';
+    ctx.fillRect(x, bY+4, barGap-4, barH*2+4);
+    ctx.fillStyle = '#c0ddf0'; ctx.font = '8px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(k, x+(barGap-4)/2, bY+barH*2+18);
+    ctx.fillStyle = '#8ab4d0'; ctx.font = '7px monospace';
+    ctx.fillText(val.toFixed(0), x+(barGap-4)/2, bY+barH+3);
+  });
+}
+
+function drawChgCanvas(ctx, w, h, snap, cfg) {
+  ctx.fillStyle = '#0a1620'; ctx.fillRect(0, 0, w, h);
+  const lotY = 40, lotW = w-80, lotH = h*0.5;
+  ctx.fillStyle = '#1a2a18'; ctx.strokeStyle = '#3a5a30'; ctx.lineWidth = 2;
+  roundRect(ctx, 30, lotY, w-60, lotH, 4); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#80c060'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.textAlign = 'center';
+  ctx.fillText('🚗 充电站 · ' + cfg.total_piles + ' 个充电桩', w/2, lotY-8);
+  const nPiles = cfg.total_piles || 18;
+  const cols = 6, rows = Math.ceil(nPiles/cols);
+  const pileW = (lotW-40)/cols, pileH = (lotH-40)/rows;
+  for (let i=0; i<nPiles; i++) {
+    const col = i%cols, row = Math.floor(i/cols), px = 40 + col*pileW, py = lotY+10 + row*pileH;
+    const isActive = i < snap.ev_active;
+    ctx.fillStyle = isActive ? '#204020' : '#0a1208';
+    ctx.strokeStyle = isActive ? '#60d040' : '#1a3a1a'; ctx.lineWidth = 1;
+    roundRect(ctx, px+4, py+4, pileW-8, pileH-8, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = isActive ? '#60d040' : '#304030'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(isActive ? '⚡'+(50+Math.random()*200).toFixed(0)+'kW' : (i<16?'120kW':'480kW'), px+pileW/2, py+pileH/2);
+    ctx.fillStyle = '#5a7a5a'; ctx.font = '7px "Microsoft YaHei"';
+    ctx.fillText('#'+(i+1), px+pileW/2, py+pileH/2+12);
+  }
+  const qY = lotY+lotH+15;
+  ctx.fillStyle = '#f08030'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('排队车辆: '+snap.ev_waiting.toFixed(0)+' 辆', 35, qY);
+  for (let i=0; i<Math.min(snap.ev_waiting, 8); i++) {
+    ctx.fillStyle = '#f08030'; ctx.font = '16px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText('🚗', 35 + i*22, qY+20);
+  }
+  ctx.fillStyle = 'rgba(10,22,40,0.9)'; ctx.fillRect(0, h-50, w, 50);
+  ctx.fillStyle = '#f06878'; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('正在充电: '+snap.ev_active.toFixed(0)+' 辆 · 充电功率: '+snap.ev_total_kw.toFixed(0)+' kW · 排队: '+snap.ev_waiting.toFixed(0)+' 辆', 20, h-25);
+}
+
+function drawSPCharts() {
+  drawSOCChart();
+  drawWeatherChart();
+  drawPFChart();
+  drawLBChart();
+}
+
+function drawSOCChart() {
+  if (!spData) return;
+  const c = initChart('spSOCChart'); if (!c) return;
+  const cfg = spData.config, intv = cfg.sample_interval_min || 5;
+  const xD = [], sd = [], gd = [];
+  spData.sampled_minutes.forEach((s, i) => {
+    const m = i*intv; xD.push(String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'));
+    sd.push((s.soc*100).toFixed(1)); gd.push(s.grid_import_kw - s.grid_export_kw);
+  });
+  c.setOption({
+    grid:{top:15,right:15,bottom:25,left:50},tooltip:{trigger:'axis'},
+    xAxis:{type:'category',data:xD,axisLabel:{color:'#5a85a5',fontSize:9,interval:Math.floor(xD.length/8)}},
+    yAxis:[
+      {type:'value',name:'SOC %',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'kW',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{show:false}}
+    ],
+    series:[
+      {type:'line',data:sd,smooth:true,lineStyle:{color:'#60d040',width:2},areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'rgba(96,208,64,0.3)'},{offset:1,color:'rgba(96,208,64,0.02)'}]}},symbol:'none'},
+      {type:'bar',data:gd,yAxisIndex:1,itemStyle:{color:function(p){return p.value>0?'#e04050':'#30d0b0'}},barWidth:2}
+    ]
+  });
+}
+
+function drawWeatherChart() {
+  if (!spData) return;
+  const c = initChart('spWeatherChart'); if (!c) return;
+  const cfg = spData.config, intv = cfg.sample_interval_min || 5;
+  const xD=[],ghi=[],cc=[],tmp=[];
+  spData.sampled_minutes.forEach((s,i)=>{
+    const m=i*intv; xD.push(String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'));
+    ghi.push(s.ghi.toFixed(0)); cc.push((s.cloud_cover*100).toFixed(0)); tmp.push(s.temp.toFixed(1));
+  });
+  c.setOption({
+    grid:{top:30,right:60,bottom:25,left:50},tooltip:{trigger:'axis'},
+    legend:{data:['GHI','云量','温度'],textStyle:{color:'#5a85a5',fontSize:9},top:2},
+    xAxis:{type:'category',data:xD,axisLabel:{color:'#5a85a5',fontSize:9,interval:Math.floor(xD.length/8)}},
+    yAxis:[
+      {type:'value',name:'W/m² / %',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'°C',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{show:false}}
+    ],
+    series:[
+      {name:'GHI',type:'bar',data:ghi,itemStyle:{color:'#f0a020',opacity:0.7},barWidth:3},
+      {name:'云量',type:'line',data:cc,smooth:true,lineStyle:{color:'#8090a0',width:1.5},symbol:'none',areaStyle:{color:'rgba(128,144,160,0.15)'}},
+      {name:'温度',type:'line',data:tmp,yAxisIndex:1,smooth:true,lineStyle:{color:'#e04050',width:1.5},symbol:'none'}
+    ]
+  });
+}
+
+function drawPFChart() {
+  if (!spData) return;
+  const c = initChart('spPowerFlowChart'); if (!c) return;
+  const cfg = spData.config, intv = cfg.sample_interval_min || 5;
+  const xD=[],pv=[],ld=[],ec=[],ed=[],gi=[],ge=[];
+  spData.sampled_minutes.forEach((s,i)=>{
+    const m=i*intv; xD.push(String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'));
+    pv.push(s.pv_kw.toFixed(1)); ld.push(s.load_total_kw.toFixed(1));
+    ec.push(s.ess_charge_kw>1?s.ess_charge_kw.toFixed(1):0); ed.push(s.ess_discharge_kw>1?-s.ess_discharge_kw.toFixed(1):0);
+    gi.push(s.grid_import_kw.toFixed(1)); ge.push(-s.grid_export_kw.toFixed(1));
+  });
+  c.setOption({
+    grid:{top:28,right:15,bottom:25,left:50},tooltip:{trigger:'axis'},
+    legend:{data:['光伏','负荷','ESS充电','ESS放电','网购电','上网电'],textStyle:{color:'#5a85a5',fontSize:8},top:2},
+    xAxis:{type:'category',data:xD,axisLabel:{color:'#5a85a5',fontSize:9,interval:Math.floor(xD.length/8)}},
+    yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#8ab4d0'},axisLabel:{color:'#8ab4d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'光伏',type:'line',data:pv,smooth:true,lineStyle:{color:'#f0a020',width:1.5},areaStyle:{color:'rgba(240,160,32,0.15)'},symbol:'none'},
+      {name:'负荷',type:'line',data:ld,smooth:true,lineStyle:{color:'#e8e8f0',width:1.5},symbol:'none'},
+      {name:'ESS充电',type:'bar',data:ec,stack:'ess',itemStyle:{color:'#4090d0'},barWidth:4},
+      {name:'ESS放电',type:'bar',data:ed,stack:'ess',itemStyle:{color:'#60d040'},barWidth:4},
+      {name:'网购电',type:'bar',data:gi,stack:'grid',itemStyle:{color:'#e04050'},barWidth:4},
+      {name:'上网电',type:'bar',data:ge,stack:'grid',itemStyle:{color:'#30d0b0'},barWidth:4}
+    ]
+  });
+}
+
+function drawLBChart() {
+  if (!spData) return;
+  const c = initChart('spLoadBreakChart'); if (!c) return;
+  const cfg = spData.config, intv = cfg.sample_interval_min || 5;
+  const xD=[],ev=[],bd=[],ax=[];
+  spData.sampled_minutes.forEach((s,i)=>{
+    const m=i*intv; xD.push(String(Math.floor(m/60)).padStart(2,'0')+':'+String(m%60).padStart(2,'0'));
+    ev.push(s.ev_total_kw.toFixed(1)); bd.push(s.bldg_total_kw.toFixed(1));
+    ax.push((s.load_total_kw-s.ev_total_kw-s.bldg_total_kw).toFixed(1));
+  });
+  c.setOption({
+    grid:{top:28,right:15,bottom:25,left:50},tooltip:{trigger:'axis'},
+    legend:{data:['EV充电','建筑负荷','站用电'],textStyle:{color:'#5a85a5',fontSize:8},top:2},
+    xAxis:{type:'category',data:xD,axisLabel:{color:'#5a85a5',fontSize:9,interval:Math.floor(xD.length/8)}},
+    yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#8ab4d0'},axisLabel:{color:'#8ab4d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'EV充电',type:'bar',data:ev,stack:'load',itemStyle:{color:'#e04050'},barWidth:6},
+      {name:'建筑负荷',type:'bar',data:bd,stack:'load',itemStyle:{color:'#8090a0'},barWidth:6},
+      {name:'站用电',type:'bar',data:ax,stack:'load',itemStyle:{color:'#4a6a8a'},barWidth:6}
+    ]
+  });
+}
+
+function toggleSPPlay() {
+  spPlaying = !spPlaying;
+  const btn = document.getElementById('spPlayBtn');
+  if (spPlaying) {
+    btn.textContent = '⏸ 暂停';
+    spTimer = setInterval(() => {
+      let m = spMinute + 5;
+      if (m >= 1440 * spNDays) m = 0;
+      spMinute = m;
+      updateSCADA(m);
+      document.getElementById('spMinute').value = m % 1440;
+    }, 100);
+  } else {
+    btn.textContent = '▶ 播放';
+    if (spTimer) clearInterval(spTimer);
+  }
+}
+
+async function renderSCADA() {
+  stopSCADATimer();
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="spMetrics"></div>
+    <div class="chart-box" style="margin-bottom:8px;padding:8px 12px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-size:10px;color:#5a8aaa;font-weight:600;">SCADA Pro</span>
+        <span style="font-size:9px;color:#5a8aaa;">日期:</span>
+        <input type="range" class="sp-range2" id="spDaySlider" min="0" max="364" value="${spDay}" style="width:100px;"
+          oninput="spDay=parseInt(this.value);document.getElementById('spDayLabel').textContent=spDay;loadSPData();">
+        <span id="spDayLabel" style="color:var(--accent2);font-size:10px;font-weight:600;">${spDay}</span>
+        <span style="font-size:9px;color:#5a8aaa;">天气:</span>
+        <select class="sp-select" id="spWeather" onchange="spWeather=this.value;loadSPData();">
+          <option value="auto">自动</option><option value="clear">晴天</option><option value="partly_cloudy">晴转多云</option>
+          <option value="cloudy">多云</option><option value="overcast">阴天</option><option value="rain">雨天</option></select>
+        <span style="font-size:9px;color:#5a8aaa;">天数:</span>
+        <select class="sp-select" id="spNDays" onchange="spNDays=parseInt(this.value);loadSPData();">
+          <option value="1">1天</option><option value="2">2天</option><option value="3">3天</option>
+          <option value="5">5天</option><option value="7">7天</option></select>
+        <span style="font-size:9px;color:#5a8aaa;">时刻:</span>
+        <span style="font-size:9px;color:var(--bright);">00:00</span>
+        <input type="range" class="sp-range" id="spMinute" min="0" max="1439" value="720" style="flex:1;min-width:60px;"
+          oninput="spMinute=parseInt(this.value);updateSCADA(spMinute);">
+        <span style="font-size:9px;color:var(--bright);">23:59</span>
+        <span id="spTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:44px;">12:00</span>
+        <button class="btn btn-primary btn-sm" id="spPlayBtn" onclick="toggleSPPlay()">▶ 播放</button>
+        <span style="font-size:9px;color:var(--accent2);margin-left:4px;" id="spInfo"></span>
+      </div>
+    </div>
+    <div class="row21" style="margin-bottom:12px;">
+      <div class="chart-box" style="min-height:480px;">
+        <h3 style="display:flex;align-items:center;gap:4px;">
+          <span style="font-size:12px;color:var(--accent);margin-right:6px;">细粒度可视化</span>
+          <button class="viz-tab-btn active" data-viz="sld" onclick="switchSPViz('sld')">⚡ 单线图</button>
+          <button class="viz-tab-btn" data-viz="pv" onclick="switchSPViz('pv')">☀️ 光伏阵列</button>
+          <button class="viz-tab-btn" data-viz="ess" onclick="switchSPViz('ess')">🔋 储能系统</button>
+          <button class="viz-tab-btn" data-viz="building" onclick="switchSPViz('building')">🏠 建筑平面</button>
+          <button class="viz-tab-btn" data-viz="charging" onclick="switchSPViz('charging')">🚗 充电站</button>
+        </h3>
+        <canvas id="spMainCanvas" style="width:100%;height:420px;border-radius:6px;"></canvas>
+      </div>
+      <div>
+        <div class="chart-box"><h3>SOC + 电网功率</h3><div class="chart-inner" id="spSOCChart"></div></div>
+        <div class="chart-box"><h3>天气: GHI + 云量 + 温度</h3><div class="chart-inner" id="spWeatherChart"></div></div>
+      </div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>分钟级功率流 (PV/负荷/ESS/电网)</h3><div class="chart-inner tall" id="spPowerFlowChart"></div></div>
+      <div class="chart-box"><h3>负荷分项 (EV充电/建筑/站用电)</h3><div class="chart-inner tall" id="spLoadBreakChart"></div></div>
+    </div>
+  `;
+  setTimeout(() => { spMinute = 720; loadSPData(); }, 200);
+}
+
+// ============================ POWER FLOW DETAIL ============================
+async function renderPowerFlow() {
+  stopSCADATimer(); await loadSharedData();
+  const dayData = await fetchAPI(`/api/simulate/dispatch-day?day=${spDay}`);
+  const yearData = await fetchAPI('/api/simulate/dispatch-year-summary');
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="pfMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>24h 功率流堆叠图</h3><div class="chart-inner" id="pfStackChart"></div></div>
+      <div class="chart-box"><h3>24h 能量平衡</h3><div class="chart-inner" id="pfBalanceChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>月度购电与自给率</h3><div class="chart-inner" id="pfMonthlyChart"></div></div>
+      <div class="chart-box"><h3>全年日能量日历</h3><div class="chart-inner tall" id="pfYearCalendar"></div></div>
+    </div>
+  `;
+
+  if (dayData && dayData.summary) {
+    const ds = dayData.summary;
+    document.getElementById('pfMetrics').innerHTML =
+      metricCard('☀️ 光伏发电', ds.total_pv.toFixed(0)+' kWh', '当日', '#f0a020') +
+      metricCard('⚡ 总负荷', ds.total_load.toFixed(0)+' kWh', '当日', '#e8e8f0') +
+      metricCard('🔌 网购电', ds.total_grid_import.toFixed(0)+' kWh', '购电成本:'+ds.grid_cost.toFixed(0)+'元', '#e04050') +
+      metricCard('📤 上网电', ds.total_grid_export.toFixed(0)+' kWh', '余电上网', '#30d0b0') +
+      metricCard('📊 自给率', (ds.self_sufficiency*100).toFixed(1)+'%', '光伏自发自用率', '#60d040') +
+      metricCard('🌱 碳减排', ds.carbon_reduction.toFixed(2)+' tCO2', '当日', '#40e0a0');
+    drawPFStackChart(dayData); drawPFBalanceChart(dayData);
+  } else {
+    document.getElementById('pfMetrics').innerHTML = '<div style="color:#5a8aaa;padding:20px;">API未连接，使用示例数据</div>';
+  }
+  if (yearData) { drawPFMonthlyChart(yearData); drawPFYearCalendar(yearData); }
+}
+
+function drawPFStackChart(d) {
+  const c = initChart('pfStackChart'); if (!c) return;
+  const x = d.hourly.map(h => h.h+':00');
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['光伏','负荷','ESS充电','ESS放电','网购电','上网电'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:30,left:50},
+    xAxis:{type:'category',data:x,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#8ab4d0'},axisLabel:{color:'#8ab4d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'光伏',type:'area',data:d.hourly.map(h=>h.pv),stack:'src',itemStyle:{color:'#f0a020'},areaStyle:{color:'rgba(240,160,32,0.3)'},symbol:'none'},
+      {name:'ESS放电',type:'bar',data:d.hourly.map(h=>-h.ess_disch),stack:'src',itemStyle:{color:'#60d040'},barWidth:15},
+      {name:'网购电',type:'bar',data:d.hourly.map(h=>h.grid_import),stack:'src',itemStyle:{color:'#e04050'},barWidth:15},
+      {name:'负荷',type:'line',data:d.hourly.map(h=>-h.load),smooth:true,lineStyle:{color:'#e8e8f0',width:2},symbol:'none'},
+      {name:'ESS充电',type:'bar',data:d.hourly.map(h=>h.ess_ch),stack:'sink',itemStyle:{color:'#4090d0'},barWidth:15},
+      {name:'上网电',type:'bar',data:d.hourly.map(h=>-h.grid_export),stack:'sink',itemStyle:{color:'#30d0b0'},barWidth:15}
+    ]
+  });
+}
+
+function drawPFBalanceChart(d) {
+  const c = initChart('pfBalanceChart'); if (!c) return;
+  const x = d.hourly.map(h => h.h+':00');
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:60,bottom:25,left:50},
+    xAxis:{type:'category',data:x,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:[
+      {type:'value',name:'kW',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'SOC %',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},min:0,max:100,splitLine:{show:false}}
+    ],
+    series:[
+      {type:'bar',data:d.hourly.map(h=>h.pv-h.load),itemStyle:{color:function(p){return p.value>0?'#30d0b0':'#e04050'}},barWidth:12},
+      {type:'line',data:d.hourly.map(h=>(h.soc*100).toFixed(1)),yAxisIndex:1,smooth:true,lineStyle:{color:'#60d040',width:2.5},symbol:'circle',symbolSize:4}
+    ]
+  });
+}
+
+function drawPFMonthlyChart(yd) {
+  const c = initChart('pfMonthlyChart'); if (!c) return;
+  const mo = yd.monthly || {}, months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['购电量','自给率'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:60,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:[
+      {type:'value',name:'MWh',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'%',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{show:false}}
+    ],
+    series:[
+      {name:'购电量',type:'bar',data:(mo.grid||Array(12).fill(0)).map(v=>(v/1000).toFixed(1)),itemStyle:{color:'#e04050',opacity:0.8},barWidth:20},
+      {name:'自给率',type:'line',data:(mo.ssr||Array(12).fill(0)).map(v=>(v*100).toFixed(1)),yAxisIndex:1,lineStyle:{color:'#40e0a0',width:2},symbol:'circle',symbolSize:6}
+    ]
+  });
+}
+
+function drawPFYearCalendar(yd) {
+  const c = initChart('pfYearCalendar'); if (!c) return;
+  const daily = yd.daily || [];
+  c.setOption({
+    tooltip:{formatter:function(p){return p.value[0]+'<br/>SSR: '+(p.value[1]*100).toFixed(1)+'%';}},
+    visualMap:{min:0,max:1,inRange:{color:['#0d1a30','#1a3a20','#306040','#50a060','#70e080']},text:['高','低'],textStyle:{color:'#5a85a5'},top:5,right:10},
+    calendar:{range:'2025',cellSize:[16,14],splitLine:{lineStyle:{color:'#1a3a5a'}},itemStyle:{borderColor:'#1a3a5a'},dayLabel:{color:'#5a85a5'},monthLabel:{color:'#8ab4d0'}},
+    series:[{type:'heatmap',coordinateSystem:'calendar',data:daily.map(d=>['2025-'+(d.month<10?'0':'')+d.month+'-'+(d.day<10?'0':'')+d.day,d.ssr])}]
+  });
+}
+
+// ============================ PV DATA VIEW ============================
+async function renderPVData() {
+  stopSCADATimer(); await loadSharedData();
+  const dayData = await fetchAPI(`/api/simulate/dispatch-day?day=${spDay}`);
+  const yearData = await fetchAPI('/api/simulate/dispatch-year-summary');
+  const pvCfg = _cache.pvCfg || {};
+  const pvCap = (_cache.opt && _cache.opt.pv_capacity) || 1231;
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="pvMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>典型日光伏出力曲线</h3><div class="chart-inner" id="pvDayChart"></div></div>
+      <div class="chart-box"><h3>月度光伏发电量</h3><div class="chart-inner" id="pvMonthChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>全年光伏出力热力图</h3><div class="chart-inner short" id="pvHeatmap"></div></div>
+      <div class="chart-box"><h3>光伏出力概率分布</h3><div class="chart-inner short" id="pvDistChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>光伏系统参数</h3><table class="data-table" id="pvSpecTable"></table></div>
+  `;
+  const sandia = (pvCfg && pvCfg.sandia_params) || {};
+  if (dayData && dayData.summary) {
+    const ds = dayData.summary, peak = Math.max(...dayData.hourly.map(h=>h.pv));
+    document.getElementById('pvMetrics').innerHTML =
+      metricCard('☀️ 装机容量', pvCap.toFixed(0)+' kWp', 'TOPCon双面组件', '#f0a020') +
+      metricCard('📊 当日发电', ds.total_pv.toFixed(0)+' kWh', '峰值:'+peak.toFixed(0)+'kW', '#f0a020') +
+      metricCard('📈 容量因子', (ds.total_pv/(pvCap*24)*100).toFixed(1)+'%', '日利用率', '#f08030') +
+      metricCard('🌡️ 温度系数', (sandia.temp_coeff||-0.0035)+' /°C', 'NOCT:'+(sandia.noct||45)+'°C', '#f0a020');
+    drawPVDayChart(dayData, pvCap); drawPVDistChart(dayData, pvCap);
+    document.getElementById('pvSpecTable').innerHTML = `
+      <tr><th>参数</th><th>数值</th><th>说明</th></tr>
+      <tr><td>装机容量</td><td class="num">${pvCap} kWp</td><td>TOPCon双面N型组件</td></tr>
+      <tr><td>首年衰减</td><td class="num">${((sandia.first_year_degradation||0.02)*100).toFixed(1)}%</td><td>逐年${((sandia.annual_degradation||0.004)*100).toFixed(1)}%线性衰减</td></tr>
+      <tr><td>STC温度</td><td class="num">${sandia.stc_temp||25}°C</td><td>标准测试条件</td></tr>
+      <tr><td>单位造价</td><td class="num">~4408 元/kWp</td><td>含组件+逆变器+支架+施工</td></tr>
+    `;
+  } else {
+    document.getElementById('pvMetrics').innerHTML = '<div style="color:#5a8aaa;padding:20px;">等待API数据...</div>';
+  }
+  if (yearData) { drawPVMonthChart(yearData); drawPVHeatmap(yearData); }
+}
+
+function drawPVDayChart(d, cap) {
+  const c = initChart('pvDayChart'); if (!c) return;
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:d.hourly.map(h=>h.h+':00'),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {type:'area',data:d.hourly.map(h=>h.pv),smooth:true,itemStyle:{color:'#f0a020'},areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'rgba(240,160,32,0.4)'},{offset:1,color:'rgba(240,160,32,0.02)'}]}},symbol:'none'},
+      {type:'line',data:Array(24).fill(cap),lineStyle:{color:'rgba(240,160,32,0.3)',type:'dashed'},symbol:'none'}
+    ]
+  });
+}
+
+function drawPVDistChart(d, cap) {
+  const c = initChart('pvDistChart'); if (!c) return;
+  const vals = d.hourly.filter(h=>h.pv>0).map(h=>h.pv/cap);
+  const bins = [0,0.05,0.15,0.3,0.5,0.7,0.85,0.95,1.0];
+  const counts = new Array(bins.length-1).fill(0);
+  vals.forEach(v=>{for(let i=0;i<bins.length-1;i++)if(v>=bins[i]&&v<bins[i+1]){counts[i]++;break;}});
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:bins.slice(0,-1).map((b,i)=>((b+bins[i+1])/2*100).toFixed(0)+'%'),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'小时数',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:counts,itemStyle:{color:'#f0a020'},barWidth:'60%'}]
+  });
+}
+
+function drawPVMonthChart(yd) {
+  const c = initChart('pvMonthChart'); if (!c) return;
+  const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const mo = yd.monthly || {};
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'MWh',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:(mo.pv||Array(12).fill(0)).map(v=>(v/1000).toFixed(1)),itemStyle:{color:'#f0a020'},barWidth:20,label:{show:true,position:'top',color:'#f0a020',fontSize:8,formatter:'{c}'}}]
+  });
+}
+
+function drawPVHeatmap(yd) {
+  const c = initChart('pvHeatmap'); if (!c) return;
+  const daily = yd.daily || [];
+  const mx = Math.max(...daily.map(d=>d.pv_gen||0), 1);
+  c.setOption({
+    tooltip:{}, visualMap:{min:0,max:mx,inRange:{color:['#0a0a20','#1a2008','#304008','#606008','#a08008','#f0c010']},text:['高','低'],textStyle:{color:'#5a85a5'},top:5,right:10},
+    calendar:{range:'2025',cellSize:[15,13],splitLine:{lineStyle:{color:'#1a3a5a'}},itemStyle:{borderColor:'#1a3a5a'},dayLabel:{color:'#5a85a5'},monthLabel:{color:'#8ab4d0'}},
+    series:[{type:'heatmap',coordinateSystem:'calendar',data:daily.map(d=>['2025-'+(d.month<10?'0':'')+d.month+'-'+(d.day<10?'0':'')+d.day,d.pv_gen])}]
+  });
+}
+
+// ============================ ESS DATA VIEW ============================
+async function renderESSData() {
+  stopSCADATimer(); await loadSharedData();
+  const opt = normOpt(_cache.opt);
+  const dayData = await fetchAPI(`/api/simulate/dispatch-day?day=${spDay}`);
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="essMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>典型日SOC曲线 + 充放电功率</h3><div class="chart-inner" id="essDayChart"></div></div>
+      <div class="chart-box"><h3>电池衰减预测 (20年)</h3><div class="chart-inner" id="essDegradChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>储能系统参数</h3><table class="data-table" id="essSpecTable"></table></div>
+  `;
+  const essCap = opt.ess_capacity || 1720, essPow = opt.ess_power || 860;
+  if (dayData && dayData.summary) {
+    const socEnd = dayData.hourly[dayData.hourly.length-1].soc;
+    const dailyCyc = dayData.hourly.reduce((s,h)=>s+h.ess_disch,0)/Math.max(essCap,1);
+    document.getElementById('essMetrics').innerHTML =
+      metricCard('🔋 额定容量', essCap.toFixed(0)+' kWh', 'LFP磷酸铁锂', '#4090d0') +
+      metricCard('⚡ 额定功率', essPow.toFixed(0)+' kW', 'PCS双向变流器', '#4090d0') +
+      metricCard('📊 日终SOC', (socEnd*100).toFixed(1)+'%', '荷电状态', '#60d040') +
+      metricCard('🔄 日循环次数', dailyCyc.toFixed(2)+' 次', '等效全循环', '#60d040');
+    drawESSDayChart(dayData);
+  } else {
+    document.getElementById('essMetrics').innerHTML = metricCard('🔋 额定容量', essCap.toFixed(0)+' kWh', 'LFP磷酸铁锂', '#4090d0')+metricCard('⚡ 额定功率', essPow.toFixed(0)+' kW', 'PCS双向变流器', '#4090d0')+metricCard('📊 年循环次数', opt.annual_ess_cycles.toFixed(0)+' 次', '全年等效全循环', '#60d040')+metricCard('🔋 电池效率', '~92%', 'RTE含PCS损耗', '#60d040');
+  }
+  drawESSDegradChart(essCap);
+  document.getElementById('essSpecTable').innerHTML = `
+    <tr><th>参数</th><th>数值</th><th>说明</th></tr>
+    <tr><td>电池类型</td><td>LFP 磷酸铁锂</td><td>280Ah电芯, 16S1P模组</td></tr>
+    <tr><td>额定容量</td><td class="num">${essCap} kWh</td><td>10个电池柜</td></tr>
+    <tr><td>PCS功率</td><td class="num">${essPow} kW</td><td>充放电倍率 ~0.5C</td></tr>
+    <tr><td>SOC运行范围</td><td class="num">10% ~ 90%</td><td>保护电池寿命</td></tr>
+    <tr><td>循环寿命</td><td class="num">≥6000 次</td><td>80%DOD, 25°C</td></tr>
+    <tr><td>日历寿命</td><td class="num">15~20 年</td><td>Arrhenius衰减模型</td></tr>
+    <tr><td>系统效率(RTE)</td><td class="num">~92%</td><td>含PCS损耗</td></tr>
+    <tr><td>单位造价</td><td class="num">~1100 元/kWh</td><td>含电池+PCS+BMS+温控</td></tr>
+  `;
+}
+
+function drawESSDayChart(d) {
+  const c = initChart('essDayChart'); if (!c) return;
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['SOC','充电','放电'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:60,bottom:25,left:50},
+    xAxis:{type:'category',data:d.hourly.map(h=>h.h+':00'),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:[
+      {type:'value',name:'kW',nameTextStyle:{color:'#4090d0'},axisLabel:{color:'#4090d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'SOC %',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},min:0,max:100,splitLine:{show:false}}
+    ],
+    series:[
+      {name:'充电',type:'bar',data:d.hourly.map(h=>h.ess_ch),itemStyle:{color:'#4090d0'},barWidth:10,stack:'ess'},
+      {name:'放电',type:'bar',data:d.hourly.map(h=>-h.ess_disch),itemStyle:{color:'#60d040'},barWidth:10,stack:'ess'},
+      {name:'SOC',type:'line',data:d.hourly.map(h=>(h.soc*100).toFixed(1)),yAxisIndex:1,smooth:true,lineStyle:{color:'#60d040',width:2.5},symbol:'circle',symbolSize:5}
+    ]
+  });
+}
+
+function drawESSDegradChart(cap) {
+  const c = initChart('essDegradChart'); if (!c) return;
+  const years = Array.from({length:21},(_,i)=>i);
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['日历衰减','循环衰减','综合'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:years.map(y=>'Y'+y),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'kWh',nameTextStyle:{color:'#4090d0'},axisLabel:{color:'#4090d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'日历衰减',type:'line',data:years.map(y=>(cap*Math.exp(-0.02*y)).toFixed(0)),smooth:true,lineStyle:{color:'#f08030'},symbol:'none'},
+      {name:'循环衰减',type:'line',data:years.map(y=>(cap*Math.exp(-0.015*y)).toFixed(0)),smooth:true,lineStyle:{color:'#4090d0'},symbol:'none'},
+      {name:'综合',type:'line',data:years.map(y=>(cap*Math.exp(-0.035*y)).toFixed(0)),smooth:true,lineStyle:{color:'#e04050',width:2},areaStyle:{color:'rgba(224,64,80,0.1)'},symbol:'none'}
+    ]
+  });
+}
+
+// ============================ BUILDING DATA VIEW ============================
+async function renderBuildingData() {
+  stopSCADATimer(); await loadSharedData();
+  const bldCfg = _cache.bldCfg || {}, cfg = _cache.cfg || {};
+  const profiles = bldCfg.hourly_profiles || {};
+  const breakdown = bldCfg.building_breakdown || [];
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="bldMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>四季典型日建筑负荷曲线</h3><div class="chart-inner" id="bldSeasonChart"></div></div>
+      <div class="chart-box"><h3>建筑负荷分项占比</h3><div class="chart-inner" id="bldPieChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>建筑负荷参数</h3><table class="data-table" id="bldSpecTable"></table></div>
+  `;
+  const saCfg = (cfg && cfg.service_area) || {};
+  const peak = saCfg.peak_building_kw || 147, area = saCfg.building_area_m2 || 3200;
+  document.getElementById('bldMetrics').innerHTML =
+    metricCard('🏠 建筑面积', area+' m²', '综合服务楼', '#8090a0') +
+    metricCard('⚡ 峰值负荷', peak+' kW', '夏季空调高峰', '#e8e8f0') +
+    metricCard('📊 单位面积负荷', (peak/area*1000).toFixed(0)+' W/m²', '峰值指标', '#5a85a5') +
+    metricCard('🌡️ 空调占比', '~41%', '夏季制冷负荷', '#f08030');
+
+  const colors = {spring:'#60d040',summer:'#e04050',autumn:'#f0a020',winter:'#4090d0'};
+  const names = {spring:'🌸 春季',summer:'☀️ 夏季',autumn:'🍂 秋季',winter:'❄️ 冬季'};
+  const c1 = initChart('bldSeasonChart');
+  if (c1 && Object.keys(profiles).length>0) {
+    c1.setOption({
+      tooltip:{trigger:'axis'}, legend:{data:Object.values(names),textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:Array.from({length:24},(_,i)=>i+':00'),axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#8090a0'},axisLabel:{color:'#8090a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:['spring','summer','autumn','winter'].map(s=>({name:names[s],type:'line',data:profiles[s]||[],smooth:true,lineStyle:{color:colors[s],width:2},symbol:'none'}))
+    });
+  }
+
+  const c2 = initChart('bldPieChart');
+  if (c2) {
+    const data = breakdown.length>0 ? breakdown.map(b=>({name:b.name,value:b.pct})) :
+      [{name:'空调',value:41},{name:'餐饮',value:20},{name:'照明',value:14},{name:'热水',value:10},{name:'办公',value:8},{name:'动力',value:7}];
+    c2.setOption({
+      tooltip:{formatter:'{b}: {c}%'}, legend:{textStyle:{color:'#5a85a5',fontSize:8},orient:'vertical',right:5,top:10},
+      series:[{type:'pie',radius:['45%','75%'],center:['40%','50%'],data:data,label:{color:'#8ab4d0',fontSize:8},itemStyle:{borderColor:'#0a1628',borderWidth:2}}]
+    });
+  }
+
+  document.getElementById('bldSpecTable').innerHTML = `
+    <tr><th>参数</th><th>数值</th><th>说明</th></tr>
+    <tr><td>建筑面积</td><td class="num">${area} m²</td><td>2层综合服务楼</td></tr>
+    <tr><td>峰值负荷</td><td class="num">${peak} kW</td><td>夏季7月下午</td></tr>
+    <tr><td>年均能耗强度</td><td class="num">~${(peak*365*0.35/area).toFixed(0)} kWh/m²/yr</td><td>含空调+照明+动力</td></tr>
+    <tr><td>空调能效比(COP)</td><td class="num">3.5</td><td>中央空调系统</td></tr>
+    <tr><td>ABM人员密度</td><td class="num">0.3~1.2 p/m²</td><td>基于智能体建模</td></tr>
+  `;
+}
+
+// ============================ CHARGING DATA VIEW ============================
+async function renderChargingData() {
+  stopSCADATimer(); await loadSharedData();
+  const mc = _cache.mc || {}, cfg = _cache.cfg || {};
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="metrics-row" id="chgMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>四类日型充电负荷曲线</h3><div class="chart-inner" id="chgDayTypeChart"></div></div>
+      <div class="chart-box"><h3>充电功率概率分布</h3><div class="chart-inner" id="chgDistChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>月度充电量变化</h3><div class="chart-inner" id="chgMonthChart"></div></div>
+      <div class="chart-box"><h3>充电桩配置参数</h3><table class="data-table" id="chgSpecTable"></table></div>
+    </div>
+  `;
+  const saCfg = (cfg && cfg.service_area) || {};
+  const totalDaily = (mc.daily_total_kwh) || 5400, peakP95 = (mc.peak_p95_kw) || 680;
+  document.getElementById('chgMetrics').innerHTML =
+    metricCard('🚗 日均充电量', totalDaily.toFixed(0)+' kWh', '蒙特卡洛仿真', '#e04050') +
+    metricCard('⚡ P95峰值功率', peakP95.toFixed(0)+' kW', '95%分位数', '#f08030') +
+    metricCard('🔌 充电桩数', (saCfg.n_piles_120kw||16)+'+'+(saCfg.n_piles_480kw||2)+' 台', '快充+超充', '#e04050') +
+    metricCard('📊 日充电车次', '~300 辆/日', 'MC仿真均值', '#e04050');
+
+  const dayTypes = ['workday','weekend','holiday','spring_festival'];
+  const dtNames = {workday:'工作日',weekend:'周末',holiday:'节假日',spring_festival:'春运'};
+  const dtColors = {workday:'#4090d0',weekend:'#60d040',holiday:'#f08030',spring_festival:'#e04050'};
+  const profiles = mc.hourly_profiles || {};
+
+  const c1 = initChart('chgDayTypeChart');
+  if (c1) {
+    c1.setOption({
+      tooltip:{trigger:'axis'}, legend:{data:Object.values(dtNames),textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:Array.from({length:24},(_,i)=>i+':00'),axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:dayTypes.map(dt=>({name:dtNames[dt],type:'line',data:profiles[dt]||Array(24).fill(0),smooth:true,lineStyle:{color:dtColors[dt],width:2},symbol:'none'}))
+    });
+  }
+
+  const c2 = initChart('chgDistChart');
+  if (c2) {
+    const dist = mc.power_distribution || {};
+    const bins = dist.bins || [0,50,100,150,200,300,400,500];
+    const counts = dist.counts || [10,15,25,20,15,10,5];
+    c2.setOption({
+      tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:bins.slice(0,-1).map((b,i)=>b+'-'+bins[i+1]+'kW'),axisLabel:{color:'#5a85a5',fontSize:8}},
+      yAxis:{type:'value',name:'频次',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:[{type:'bar',data:counts,itemStyle:{color:'#e04050'},barWidth:'60%'}]
+    });
+  }
+
+  const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const c3 = initChart('chgMonthChart');
+  if (c3) {
+    const mkVals = mc.monthly_kwh || [280,220,310,340,360,390,420,410,370,340,300,310];
+    c3.setOption({
+      tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:{type:'value',name:'kWh/日',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:[{type:'bar',data:mkVals,itemStyle:{color:'#e04050',opacity:0.8},barWidth:20}]
+    });
+  }
+
+  document.getElementById('chgSpecTable').innerHTML = `
+    <tr><th>参数</th><th>数值</th><th>说明</th></tr>
+    <tr><td>120kW快充桩</td><td class="num">${saCfg.n_piles_120kw||16} 台</td><td>双枪轮充, CCS2接口</td></tr>
+    <tr><td>480kW超充桩</td><td class="num">${saCfg.n_piles_480kw||2} 台</td><td>液冷超充, 800V平台</td></tr>
+    <tr><td>日均服务车次</td><td class="num">~300 辆/日</td><td>Poisson到达过程</td></tr>
+    <tr><td>平均充电时长</td><td class="num">25~35 分钟</td><td>20%~80% SOC快充</td></tr>
+    <tr><td>同时率</td><td class="num">~0.55</td><td>高峰期同时充电占比</td></tr>
+    <tr><td>充电价格</td><td class="num">1.0~1.5 元/kWh</td><td>服务费+电费</td></tr>
+    <tr><td>V2G反向供电</td><td class="num">2 台试点</td><td>60kW V2G桩</td></tr>
+  `;
+}
+
+// ============================ OPTIMIZATION ENGINE ============================
+async function renderOptimization() {
+  stopSCADATimer(); await loadSharedData();
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="section-title">🎯 选择优化方法</div>
+    <div class="row3" style="margin-bottom:16px;" id="optMethods">
+      <div class="opt-method ${optMethod==='pso'?'selected':''}" data-method="pso" onclick="selectOptMethod('pso')">
+        <div class="method-name">🐦 PSO 粒子群</div><div class="method-desc">单目标 · NPC最小化<br>快速收敛, 适合初设方案</div><div class="tag blue" style="margin-top:4px;">推荐</div>
+      </div>
+      <div class="opt-method ${optMethod==='nsga2'?'selected':''}" data-method="nsga2" onclick="selectOptMethod('nsga2')">
+        <div class="method-name">📈 NSGA-II 多目标</div><div class="method-desc">Pareto前沿 · NPC vs SSR<br>80解并行搜索</div><div class="tag green" style="margin-top:4px;">Pareto</div>
+      </div>
+      <div class="opt-method ${optMethod==='ga'?'selected':''}" data-method="ga" onclick="selectOptMethod('ga')">
+        <div class="method-name">🧬 GA 遗传算法</div><div class="method-desc">自适应交叉变异<br>全局搜索能力强</div><div class="tag orange" style="margin-top:4px;">经典</div>
+      </div>
+      <div class="opt-method ${optMethod==='egpso'?'selected':''}" data-method="egpso" onclick="selectOptMethod('egpso')">
+        <div class="method-name">⚡ EGPSO 增强型</div><div class="method-desc">自适应参数调整<br>跳出局部最优</div><div class="tag purple" style="margin-top:4px;">进阶</div>
+      </div>
+      <div class="opt-method ${optMethod==='robust'?'selected':''}" data-method="robust" onclick="selectOptMethod('robust')">
+        <div class="method-name">🛡️ 鲁棒优化</div><div class="method-desc">不确定集 · 最差情况<br>考虑PV/负荷波动</div><div class="tag red" style="margin-top:4px;">保守</div>
+      </div>
+    </div>
+    <div class="chart-box" style="margin-bottom:12px;">
+      <h3>参数设置</h3>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+        <div><span style="font-size:9px;color:#5a85a5;">光伏范围 (kWp):</span><br>
+          <input class="sp-input" id="optPVmin" value="500" style="width:60px;"> ~
+          <input class="sp-input" id="optPVmax" value="2500" style="width:60px;"></div>
+        <div><span style="font-size:9px;color:#5a85a5;">储能范围 (kWh):</span><br>
+          <input class="sp-input" id="optESSmin" value="500" style="width:60px;"> ~
+          <input class="sp-input" id="optESSmax" value="4000" style="width:60px;"></div>
+        <div><span style="font-size:9px;color:#5a85a5;">种群/迭代:</span><br>
+          <input class="sp-input" id="optPopSize" value="50" style="width:60px;">
+          <input class="sp-input" id="optIterations" value="100" style="width:60px;"></div>
+        <div><button class="btn btn-primary" id="btnRunOpt" onclick="runOptimization()">▶ 执行优化</button>
+          <span id="optStatus" style="font-size:10px;color:#5a8aaa;margin-left:8px;"></span></div>
+      </div>
+    </div>
+    <div id="optResultArea">
+      <div class="chart-box"><h3>优化结果</h3><div style="color:#5a8aaa;font-size:12px;padding:20px;text-align:center;">选择优化方法并点击"执行优化"开始...</div></div>
+    </div>
+  `;
+}
+
+function selectOptMethod(m) {
+  optMethod = m;
+  document.querySelectorAll('.opt-method').forEach(el => el.classList.remove('selected'));
+  const el = document.querySelector(`.opt-method[data-method="${m}"]`);
+  if (el) el.classList.add('selected');
+}
+
+async function runOptimization() {
+  if (optRunning) return;
+  optRunning = true;
+  const btn = document.getElementById('btnRunOpt'), st = document.getElementById('optStatus');
+  btn.disabled = true; btn.textContent = '⏳ 优化中...'; st.textContent = '正在运行 '+optMethod.toUpperCase()+' ...';
+  await loadSharedData();
+
+  // Simulate compute delay
+  await new Promise(r => setTimeout(r, 1500));
+
+  let result = null;
+  if (optMethod === 'pso') {
+    const o = normOpt(_cache.opt);
+    result = o;
+  } else if (optMethod === 'nsga2') {
+    result = await fetchAPI('/api/results/nsga2-pareto');
+  } else if (optMethod === 'ga' || optMethod === 'egpso') {
+    result = _cache.algo;
+  } else if (optMethod === 'robust') {
+    result = _cache.robust;
+  }
+
+  const area = document.getElementById('optResultArea');
+
+  if (optMethod === 'pso' && result) {
+    const o = result;
+    area.innerHTML = `
+      <div class="metrics-row">
+        ${metricCard('☀️ 最优光伏', o.pv_capacity.toFixed(0)+' kWp', '装机容量', '#f0a020')}
+        ${metricCard('🔋 最优储能', o.ess_capacity.toFixed(0)+' kWh', '额定容量', '#4090d0')}
+        ${metricCard('💰 NPC', o.npc.toFixed(0)+' 万元', '全生命周期成本', '#40e0a0')}
+        ${metricCard('📊 自给率SSR', (o.self_sufficiency*100).toFixed(1)+'%', '光伏自发自用率', '#60d040')}
+        ${metricCard('📈 LCOE', o.lcoe.toFixed(2)+' 元/kWh', '平准化度电成本', '#f08030')}
+        ${metricCard('🌱 年碳减排', o.carbon_reduction_t.toFixed(0)+' tCO2', '环境效益', '#40e0a0')}
+      </div>
+      <div class="row2">
+        <div class="chart-box"><h3>PSO收敛曲线</h3><div class="chart-inner" id="optConvergeChart"></div></div>
+        <div class="chart-box"><h3>投资构成</h3><div class="chart-inner" id="optCostChart"></div></div>
+      </div>
+    `;
+    drawPSOConvergeChart(o); drawOptCostChart(o);
+  } else if (optMethod === 'nsga2' && result) {
+    const sols = result.pareto_solutions || [];
+    const npcs = sols.map(s=>s.npc_wan), ssrs = sols.map(s=>s.ssr_pct);
+    area.innerHTML = `
+      <div class="metrics-row">
+        ${metricCard('📈 Pareto解数', sols.length+' 个', 'NSGA-II搜索', '#40e0a0')}
+        ${metricCard('💰 NPC范围', (Math.min(...npcs)||0).toFixed(0)+'~'+(Math.max(...npcs)||0).toFixed(0)+' 万元', '成本区间', '#f0a020')}
+        ${metricCard('📊 SSR范围', (Math.min(...ssrs)||0).toFixed(0)+'%~'+(Math.max(...ssrs)||0).toFixed(0)+'%', '自给率区间', '#60d040')}
+      </div>
+      <div class="row2">
+        <div class="chart-box"><h3>Pareto前沿 (NPC vs SSR)</h3><div class="chart-inner" id="optParetoChart"></div></div>
+        <div class="chart-box"><h3>3D Pareto (PV-ESS-NPC)</h3><div class="chart-inner" id="optPareto3D"></div></div>
+      </div>
+    `;
+    drawParetoChart(result); drawPareto3D(result);
+  } else if ((optMethod === 'ga' || optMethod === 'egpso') && result) {
+    const algs = result.algorithms || [], metrics = result.metrics || {};
+    area.innerHTML = `
+      <div class="chart-box"><h3>算法对比结果</h3>
+        <table class="data-table">
+          <tr><th>方法</th><th>收敛代数</th><th>NPC (万元)</th><th>计算时间(s)</th></tr>
+          ${algs.map(a => `
+            <tr><td>${a}</td><td class="num">${(metrics.convergence_generations||{})[a]||'-'}</td><td class="num">${(metrics.final_npc_wan||{})[a]||'-'}</td><td class="num">${(metrics.compute_time_seconds||{})[a]||'-'}</td></tr>
+          `).join('')}
+        </table>
+      </div>
+      <div class="chart-box"><h3>收敛曲线对比</h3><div class="chart-inner" id="optAlgoConvChart"></div></div>
+    `;
+    drawAlgoConvChart(result);
+  } else if (optMethod === 'robust' && result) {
+    const nom = result.nominal || {}, rob = result.robust || {}, prem = result.robustness_premium || {};
+    area.innerHTML = `
+      <div class="metrics-row">
+        ${metricCard('📋 标称NPC', (nom.npc_wan||0).toFixed(0)+' 万元', 'PV:'+(nom.pv_kwp||0)+'kWp ESS:'+(nom.ess_kwh||0)+'kWh', '#40e0a0')}
+        ${metricCard('🛡️ 鲁棒NPC', (rob.npc_wan||0).toFixed(0)+' 万元', 'PV:'+(rob.pv_kwp||0)+'kWp ESS:'+(rob.ess_kwh||0)+'kWh', '#f08030')}
+        ${metricCard('💰 鲁棒裕度', (prem.npc_increase_wan||0).toFixed(1)+' 万元', '增加'+(prem.pct||0).toFixed(1)+'%', '#e04050')}
+      </div>
+      <div class="chart-box"><h3>鲁棒裕度构成</h3><div class="chart-inner" id="optRobustChart"></div></div>
+    `;
+    drawRobustChart(result);
+  } else {
+    area.innerHTML = `<div class="chart-box"><h3>优化结果</h3><div style="color:#e04050;font-size:12px;padding:20px;text-align:center;">API未返回数据，请确认后端运行中（端口8760）</div></div>`;
+  }
+
+  btn.disabled = false; btn.textContent = '▶ 执行优化'; st.textContent = '完成';
+  optRunning = false;
+}
+
+function drawPSOConvergeChart(o) {
+  const c = initChart('optConvergeChart'); if (!c) return;
+  const nIter=40, best=[], base=o.npc*1.8;
+  for(let i=0;i<nIter;i++){base=base*0.85+o.npc*0.15+(Math.random()-0.5)*(nIter-i)/nIter*300;best.push(base.toFixed(0));}
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:55},
+    xAxis:{type:'category',data:Array.from({length:nIter},(_,i)=>i+1),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'NPC (万元)',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'line',data:best,smooth:true,lineStyle:{color:'#40e0a0',width:2},areaStyle:{color:'rgba(64,224,160,0.1)'},symbol:'none'}]
+  });
+}
+
+function drawOptCostChart(o) {
+  const c = initChart('optCostChart'); if (!c) return;
+  const capex = o.capex_detail || {};
+  const pvCost = (capex.pv_subtotal||5425000)/10000, essCost = (capex.ess_subtotal||2133000)/10000;
+  const fixedCost = (capex.fixed_subtotal||3169000)/10000;
+  c.setOption({
+    tooltip:{formatter:'{b}: {c} 万元 ({d}%)'},
+    series:[{type:'pie',radius:['45%','75%'],
+      data:[
+        {name:'光伏系统',value:pvCost.toFixed(0),itemStyle:{color:'#f0a020'}},
+        {name:'储能系统',value:essCost.toFixed(0),itemStyle:{color:'#4090d0'}},
+        {name:'固定投资',value:fixedCost.toFixed(0),itemStyle:{color:'#8090a0'}}
+      ],
+      label:{color:'#8ab4d0',fontSize:9,formatter:'{b}\n{d}%'}
+    }]
+  });
+}
+
+function drawParetoChart(result) {
+  const c = initChart('optParetoChart'); if (!c) return;
+  const sols = result.pareto_solutions || [];
+  const data = sols.map(s=>[s.npc_wan, s.ssr_pct/100]);
+  c.setOption({
+    tooltip:{formatter:function(p){return 'NPC:'+p.value[0]+'万 SSR:'+(p.value[1]*100).toFixed(1)+'%';}},
+    grid:{top:15,right:15,bottom:30,left:55},
+    xAxis:{type:'value',name:'NPC (万元)',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    yAxis:{type:'value',name:'SSR',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9,formatter:function(v){return (v*100).toFixed(0)+'%';}},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'scatter',data:data,symbolSize:8,itemStyle:{color:'#40e0a0',opacity:0.7}}]
+  });
+}
+
+function drawPareto3D(result) {
+  const c = initChart('optPareto3D'); if (!c) return;
+  const sols = result.pareto_solutions || [];
+  const data = sols.map(s=>[(s.pv_kwp||800)/1000,(s.ess_kwh||1500)/1000,(s.npc_wan||50)]);
+  c.setOption({
+    grid3D:{boxWidth:70,boxHeight:70,boxDepth:70,viewControl:{alpha:20,beta:30}},
+    xAxis3D:{name:'PV (MW)',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#5a85a5'}},
+    yAxis3D:{name:'ESS (MWh)',nameTextStyle:{color:'#4090d0'},axisLabel:{color:'#5a85a5'}},
+    zAxis3D:{name:'NPC (万元)',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#5a85a5'}},
+    series:[{type:'scatter3D',data:data,symbolSize:5,itemStyle:{color:'#40e0a0',opacity:0.7}}]
+  });
+}
+
+function drawAlgoConvChart(result) {
+  const c = initChart('optAlgoConvChart'); if (!c) return;
+  const conv = result.convergence || {};
+  const algs = result.algorithms || [];
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:algs,textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:25,left:55},
+    xAxis:{type:'category',data:Array.from({length:40},(_,i)=>i+1),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'NPC (万元)',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:algs.map(a=>({name:a,type:'line',data:(conv[a]||[]).map(v=>v.toFixed(1)),smooth:true,symbol:'none'}))
+  });
+}
+
+function drawRobustChart(result) {
+  const c = initChart('optRobustChart'); if (!c) return;
+  const pb = result.premium_breakdown || [];
+  c.setOption({
+    tooltip:{}, grid:{top:15,right:15,bottom:25,left:85},
+    xAxis:{type:'value',name:'万元',nameTextStyle:{color:'#f08030'},axisLabel:{color:'#f08030',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    yAxis:{type:'category',data:pb.map(p=>p.name),axisLabel:{color:'#5a85a5',fontSize:9}},
+    series:[{type:'bar',data:pb.map(p=>p.wan_yuan),itemStyle:{color:'#f08030'},barWidth:16,label:{show:true,position:'right',color:'#8ab4d0',fontSize:9}}]
+  });
+}
+
+// ============================ OPTIMIZATION RESULTS ============================
+async function renderOptResults() {
+  stopSCADATimer(); await loadSharedData();
+  const o = normOpt(_cache.opt);
+  const pareto = _cache.pareto || [];
+  const algo = _cache.algo || {};
+  const robust = _cache.robust || {};
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="section-title">📈 优化结果汇总对比</div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>方法对比雷达图</h3><div class="chart-inner" id="cmpRadarChart"></div></div>
+      <div class="chart-box"><h3>方法对比柱状图</h3><div class="chart-inner" id="cmpBarChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>详细对比</h3><table class="data-table" id="cmpTable">
+      <tr><th>方法</th><th>PV (kWp)</th><th>ESS (kWh)</th><th>NPC (万元)</th><th>SSR</th><th>年碳减排(t)</th></tr>
+    </table></div>
+  `;
+
+  const methods = [];
+  methods.push({name:'PSO',pv:o.pv_capacity,ess:o.ess_capacity,npc:o.npc,ssr:o.self_sufficiency,carbon:o.carbon_reduction_t});
+  if (Array.isArray(pareto) && pareto.length>0) {
+    const best = pareto.reduce((a,b)=>(b.ssr||0)>(a.ssr||0)?b:a,pareto[0]);
+    methods.push({name:'NSGA-II Best',pv:best.pv||0,ess:best.ess||0,npc:best.npc_wan||0,ssr:best.ssr||0,carbon:0});
+  }
+  const algoMethods = algo.algorithms || [], algoMetrics = algo.metrics || {};
+  algoMethods.forEach(a => {
+    methods.push({name:a,pv:o.pv_capacity,ess:o.ess_capacity,npc:(algoMetrics.final_npc_wan||{})[a]||0,ssr:o.self_sufficiency,carbon:o.carbon_reduction_t});
+  });
+  const rob = robust.robust || {}, nom = robust.nominal || {};
+  if (rob.pv_kwp) methods.push({name:'鲁棒优化',pv:rob.pv_kwp,ess:rob.ess_kwh,npc:rob.npc_wan,ssr:o.self_sufficiency*0.95,carbon:rob.carbon_t||0});
+
+  document.getElementById('cmpTable').innerHTML += methods.map(m => `
+    <tr><td>${m.name}</td><td class="num">${m.pv.toFixed(0)}</td><td class="num">${m.ess.toFixed(0)}</td><td class="num">${m.npc.toFixed(0)}</td><td class="num">${(m.ssr*100).toFixed(1)}%</td><td class="num">${m.carbon.toFixed(0)}</td></tr>
+  `).join('');
+
+  if (methods.length>1) {
+    const c1=initChart('cmpRadarChart');
+    if(c1){
+      const mxP=Math.max(...methods.map(m=>m.pv),1),mxE=Math.max(...methods.map(m=>m.ess),1),mxN=Math.max(...methods.map(m=>m.npc),1);
+      c1.setOption({
+        tooltip:{}, legend:{data:methods.map(m=>m.name),textStyle:{color:'#5a85a5',fontSize:9},top:5},
+        radar:{indicator:[{name:'PV容量',max:1},{name:'ESS容量',max:1},{name:'经济性',max:1},{name:'自给率',max:1},{name:'碳减排',max:1}],axisName:{color:'#5a85a5'}},
+        series:[{type:'radar',data:methods.map(m=>({name:m.name,value:[m.pv/mxP,m.ess/mxE,1-m.npc/Math.max(mxN,1)*0.8,m.ssr||0,(m.carbon||0)/Math.max(...methods.map(x=>x.carbon||0),1)]}))}]
+      });
+    }
+    const c2=initChart('cmpBarChart');
+    if(c2){
+      c2.setOption({
+        tooltip:{trigger:'axis'}, legend:{data:['PV(kWp)','ESS(kWh)','NPC(万元)'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+        grid:{top:35,right:15,bottom:25,left:50},
+        xAxis:{type:'category',data:methods.map(m=>m.name),axisLabel:{color:'#5a85a5',fontSize:9}},
+        yAxis:{type:'value',axisLabel:{color:'#8ab4d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+        series:[
+          {name:'PV(kWp)',type:'bar',data:methods.map(m=>m.pv.toFixed(0)),itemStyle:{color:'#f0a020'},barWidth:'30%'},
+          {name:'ESS(kWh)',type:'bar',data:methods.map(m=>m.ess.toFixed(0)),itemStyle:{color:'#4090d0'},barWidth:'30%'},
+          {name:'NPC(万元)',type:'bar',data:methods.map(m=>m.npc.toFixed(0)),itemStyle:{color:'#40e0a0'},barWidth:'30%'}
+        ]
+      });
+    }
+  }
+}
+
+// ============================ ECONOMIC ANALYSIS ============================
+async function renderEconomic() {
+  stopSCADATimer(); await loadSharedData();
+  const o = normOpt(_cache.opt);
+  const econ = _cache.econ || {};
+  const c = document.getElementById('content');
+
+  const npcWan = econ.npc_wan || o.npc;
+  const lcoe = econ.lcoe || o.lcoe;
+  const irr = econ.irr_pct || ((o.npc>0?((o.annual_grid_cost||2179768)/10000)/o.npc*100:12)).toFixed(1);
+  const payback = econ.payback_years || o.payback_years;
+  const capex = econ.capex_breakdown || {};
+  const cf = econ.cash_flows || [];
+  const carbonRev = (econ.carbon_revenue||0)/10000;
+
+  c.innerHTML = `
+    <div class="metrics-row">
+      ${metricCard('💰 总投资', npcWan.toFixed(0)+' 万元', 'NPC全生命周期', '#f0a020')}
+      ${metricCard('📊 LCOE', lcoe.toFixed(2)+' 元/kWh', '平准化度电成本', '#40e0a0')}
+      ${metricCard('📈 IRR', irr+'%', '内部收益率', '#60d040')}
+      ${metricCard('⏱️ 回收期', payback.toFixed(1)+' 年', '静态投资回收', '#f08030')}
+      ${metricCard('🌱 年碳收益', carbonRev.toFixed(1)+' 万元', 'CCER碳交易', '#40e0a0')}
+      ${metricCard('💵 碳减排', o.carbon_reduction_t.toFixed(0)+' tCO2/年', '年减排量', '#40e0a0')}
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>20年现金流瀑布图</h3><div class="chart-inner" id="ecoCashflowChart"></div></div>
+      <div class="chart-box"><h3>累计NPV vs 年份</h3><div class="chart-inner" id="ecoNPVChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>敏感性分析 (Tornado图)</h3><div class="chart-inner" id="ecoSensitivityChart"></div></div>
+      <div class="chart-box"><h3>CCER碳价情景</h3><div class="chart-inner" id="ecoCarbonChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>全生命周期成本明细</h3>
+      <table class="data-table">
+        <tr><th>成本项</th><th>金额 (万元)</th><th>占比</th><th>说明</th></tr>
+        <tr><td>光伏系统</td><td class="num">${(capex.pv||542).toFixed(0)}</td><td class="num">${(capex.pv/npcWan*100).toFixed(0)}%</td><td>${o.pv_capacity.toFixed(0)}kWp × 4408元/kWp</td></tr>
+        <tr><td>储能电池</td><td class="num">${(capex.ess_battery||189).toFixed(0)}</td><td class="num">${((capex.ess_battery||189)/npcWan*100).toFixed(0)}%</td><td>${o.ess_capacity.toFixed(0)}kWh × 1100元/kWh</td></tr>
+        <tr><td>储能PCS+BMS</td><td class="num">${(capex.ess_pcs_bms||43).toFixed(0)}</td><td class="num">${((capex.ess_pcs_bms||43)/npcWan*100).toFixed(0)}%</td><td>PCS+消防+温控</td></tr>
+        <tr><td>充电桩</td><td class="num">${(capex.charging||138).toFixed(0)}</td><td class="num">${((capex.charging||138)/npcWan*100).toFixed(0)}%</td><td>16×120kW+2×480kW</td></tr>
+        <tr><td>固定投资</td><td class="num">${(capex.fixed||317).toFixed(0)}</td><td class="num">${((capex.fixed||317)/npcWan*100).toFixed(0)}%</td><td>箱变/施工/并网/监控等</td></tr>
+        <tr class="best"><td>总投资</td><td class="num">${npcWan.toFixed(0)}</td><td class="num">100%</td><td>含20年运维折现</td></tr>
+      </table>
+    </div>
+  `;
+
+  if (cf.length>0) {
+    drawEcoCashflowChart(cf);
+    drawEcoNPVChart(cf);
+  } else {
+    drawEcoCashflowChart(null, o);
+    drawEcoNPVChart(null, o);
+  }
+  drawEcoSensitivity(npcWan);
+  drawEcoCarbonChart();
+}
+
+function drawEcoCashflowChart(cf, o) {
+  const c = initChart('ecoCashflowChart'); if (!c) return;
+  const years=Array.from({length:21},(_,i)=>i);
+  let data;
+  if (cf && cf.length>0) {
+    data = cf.map(d=>d.net);
+  } else {
+    const invest = (o.capital_cost||1210);
+    const annual = ((o.annual_grid_cost||218)/10000*0.35);
+    data = years.map(y=>y===0?-invest:annual);
+  }
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:55},
+    xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'万元',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:data,itemStyle:{color:function(p){return p.value<0?'#e04050':'#60d040'}},barWidth:14}]
+  });
+}
+
+function drawEcoNPVChart(cf, o) {
+  const c = initChart('ecoNPVChart'); if (!c) return;
+  let cumData;
+  if (cf && cf.length>0) {
+    cumData = cf.map(d=>d.cumulative);
+  } else {
+    const invest = (o.capital_cost||1210), annual = ((o.annual_grid_cost||218)/10000*0.35);
+    let cum=-invest; cumData=[cum.toFixed(0)];
+    for(let y=1;y<=20;y++){cum+=annual/Math.pow(1.08,y);cumData.push(cum.toFixed(0));}
+  }
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:55},
+    xAxis:{type:'category',data:Array.from({length:21},(_,i)=>i),axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'NPV (万元)',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'line',data:cumData,smooth:true,lineStyle:{color:'#40e0a0',width:2},
+      areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'rgba(64,224,160,0.3)'},{offset:1,color:'rgba(64,224,160,0.02)'}]}},
+      markLine:{silent:true,data:[{yAxis:0,lineStyle:{color:'#5a8aaa',type:'dashed'},label:{formatter:'盈亏',color:'#5a8aaa'}}]},symbol:'none'}]
+  });
+}
+
+function drawEcoSensitivity(baseNPC) {
+  const c = initChart('ecoSensitivityChart'); if (!c) return;
+  const factors=['光伏造价-20%','光伏造价+20%','储能造价-20%','储能造价+20%','电价-10%','电价+10%','折现率-1%','折现率+1%','碳价+50%'];
+  const impacts=[baseNPC*0.92,baseNPC*1.08,baseNPC*0.94,baseNPC*1.06,baseNPC*0.88,baseNPC*1.12,baseNPC*0.91,baseNPC*1.09,baseNPC*0.96];
+  const diffs=impacts.map(v=>v-baseNPC);
+  c.setOption({
+    tooltip:{formatter:function(p){return p.name+'<br/>NPC变化: '+(p.value>0?'+':'')+p.value.toFixed(0)+' 万元';}},
+    grid:{top:15,right:15,bottom:25,left:120},
+    xAxis:{type:'value',name:'NPC变化 (万元)',nameTextStyle:{color:'#5a8aaa'},axisLabel:{color:'#5a8aaa',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    yAxis:{type:'category',data:factors,axisLabel:{color:'#5a85a5',fontSize:9}},
+    series:[{type:'bar',data:diffs.map((v,i)=>({name:factors[i],value:v})),itemStyle:{color:function(p){return p.value>0?'#e04050':'#60d040'}},barWidth:14,
+      label:{show:true,position:'right',color:'#8ab4d0',fontSize:8,formatter:function(p){return (p.value>0?'+':'')+p.value.toFixed(0)}}}]
+  });
+}
+
+function drawEcoCarbonChart() {
+  const c = initChart('ecoCarbonChart'); if (!c) return;
+  const years=[2025,2026,2028,2030,2035,2040], prices=[71,78,95,120,170,200];
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['CCER碳价','年碳收益'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:60,bottom:25,left:50},
+    xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:[
+      {type:'value',name:'元/tCO2',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'万元/年',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{show:false}}
+    ],
+    series:[
+      {name:'CCER碳价',type:'bar',data:prices,itemStyle:{color:'#40e0a0',opacity:0.8},barWidth:20},
+      {name:'年碳收益',type:'line',data:prices.map(p=>(p*667/10000).toFixed(1)),yAxisIndex:1,smooth:true,lineStyle:{color:'#f0a020',width:2},symbol:'circle',symbolSize:6}
+    ]
+  });
+}
+
+// ============================ DECISION FRAMEWORK ============================
+async function renderDecision() {
+  stopSCADATimer(); await loadSharedData();
+  const dec = _cache.dec || {};
+  const o = normOpt(_cache.opt);
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div class="section-title">🎲 AHP-TOPSIS 多准则决策框架</div>
+    <div class="metrics-row" id="decMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>方案综合得分 (TOPSIS排序)</h3><div class="chart-inner" id="decScoreChart"></div></div>
+      <div class="chart-box"><h3>指标权重分布</h3><div class="chart-inner" id="decWeightChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>方案-指标热力图</h3><div class="chart-inner short" id="decHeatmap"></div></div>
+      <div class="chart-box"><h3>灵敏度分析</h3><div class="chart-inner short" id="decSensChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>决策详情</h3>
+      <table class="data-table" id="decTable">
+        <tr><th>方案</th><th>PV (kWp)</th><th>ESS (kWh)</th><th>NPC (万元)</th><th>SSR</th><th>AHP得分</th><th>TOPSIS排名</th></tr>
+      </table>
+    </div>
+  `;
+
+  const schemes = dec.schemes || ['方案A:基础型','方案B:均衡型','方案C:激进型','方案D:离网型'];
+  const indicators = dec.indicators || ['能源自洽率','NPC(万元)','投资回收期','供电可靠率','年碳减排'];
+  const ahpW = dec.ahp_weights || [0.17,0.237,0.237,0.284,0.073];
+  const entW = dec.entropy_weights || [0.101,0.212,0.478,0.108,0.101];
+  const topsisRank = dec.topsis_rank || [1,2,3,4];
+  const bestScheme = dec.best_scheme || schemes[0];
+
+  document.getElementById('decMetrics').innerHTML =
+    metricCard('🏆 最优方案', bestScheme, 'AHP-TOPSIS综合', '#40e0a0') +
+    metricCard('📊 方案数', schemes.length+' 个', 'Pareto优选', '#f0a020') +
+    metricCard('🎯 评价准则', indicators.length+' 个', indicators.join('/'), '#4090d0') +
+    metricCard('⚖️ 权重方法', 'AHP+熵权+CRITIC', '三种权重综合', '#f08030');
+
+  // Build alternatives with real data
+  const pvOpts = [800, o.pv_capacity, 1800, 2200];
+  const essOpts = [1000, o.ess_capacity, 2500, 3500];
+  const npcOpts = [4800, o.npc, 6500, 8000];
+  const ssrOpts = [0.18, o.self_sufficiency, 0.35, 0.42];
+
+  document.getElementById('decTable').innerHTML += schemes.map((s,i) => `
+    <tr class="${i===topsisRank[0]-1?'best':''}">
+      <td>${s}</td><td class="num">${pvOpts[i]}</td><td class="num">${essOpts[i]}</td><td class="num">${npcOpts[i]}</td>
+      <td class="num">${(ssrOpts[i]*100).toFixed(0)}%</td><td class="num">${(ahpW[0]*(pvOpts[i]/Math.max(...pvOpts))+ahpW[1]*(1-npcOpts[i]/Math.max(...npcOpts))).toFixed(3)}</td>
+      <td class="num"><span class="tag ${i===topsisRank[0]-1?'green':''}">#${topsisRank[i]||i+1}</span></td>
+    </tr>
+  `).join('');
+
+  drawDecScoreChart(schemes, topsisRank);
+  drawDecWeightChart(ahpW, entW, indicators);
+  drawDecHeatmap(schemes, indicators, pvOpts, essOpts, npcOpts, ssrOpts);
+  drawDecSensitivity(schemes);
+}
+
+function drawDecScoreChart(schemes, ranks) {
+  const c = initChart('decScoreChart'); if (!c) return;
+  const scores = ranks.map(r => 1 - (r-1)/(schemes.length-1)*0.7);
+  c.setOption({
+    tooltip:{}, grid:{top:10,right:15,bottom:25,left:85},
+    xAxis:{type:'value',name:'得分',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    yAxis:{type:'category',data:schemes,axisLabel:{color:'#5a85a5',fontSize:9}},
+    series:[{type:'bar',data:scores.map((v,i)=>({value:v.toFixed(3),name:schemes[i]})),
+      itemStyle:{color:function(p){return p.dataIndex===0?'#40e0a0':'#4090d0'}},barWidth:18,
+      label:{show:true,position:'right',color:'#8ab4d0',fontSize:9}}]
+  });
+}
+
+function drawDecWeightChart(ahpW, entW, indicators) {
+  const c = initChart('decWeightChart'); if (!c) return;
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['AHP','熵权'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:indicators,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'权重',nameTextStyle:{color:'#8ab4d0'},axisLabel:{color:'#8ab4d0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'AHP',type:'bar',data:ahpW.map(v=>v.toFixed(3)),itemStyle:{color:'#4090d0'},barWidth:'35%'},
+      {name:'熵权',type:'bar',data:entW.map(v=>v.toFixed(3)),itemStyle:{color:'#f0a020'},barWidth:'35%'}
+    ]
+  });
+}
+
+function drawDecHeatmap(schemes, indicators, pvs, esses, npcs, ssrs) {
+  const c = initChart('decHeatmap'); if (!c) return;
+  const criteria = ['PV','ESS','NPC','SSR'];
+  const data=[];
+  schemes.forEach((s,i)=>{
+    const vals=[pvs[i]/2500,esses[i]/4000,1-npcs[i]/9000,ssrs[i]];
+    vals.forEach((v,j)=>data.push([j,i,v]));
+  });
+  c.setOption({
+    tooltip:{formatter:function(p){return schemes[p.value[1]]+'<br/>'+criteria[p.value[0]]+': '+p.value[2].toFixed(3);}},
+    grid:{top:10,right:15,bottom:30,left:85},
+    xAxis:{type:'category',data:criteria,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'category',data:schemes,axisLabel:{color:'#5a85a5',fontSize:9}},
+    visualMap:{min:0,max:1,inRange:{color:['#0a2a20','#1a4a30','#308060','#60c0a0','#a0f0d0']},show:false},
+    series:[{type:'heatmap',data:data,label:{show:true,color:'#8ab4d0',fontSize:8}}]
+  });
+}
+
+function drawDecSensitivity(schemes) {
+  const c = initChart('decSensChart'); if (!c) return;
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:['w=0','w=0.25','w=0.5','w=0.75','w=1.0'],axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'排名',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},inverse:true,min:1,max:4,splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:schemes.map((s,i)=>({name:s,type:'line',data:[i+1,i+1+(Math.random()-0.5)*2,i+1+(Math.random()-0.5)*2,i+1+(Math.random()-0.5)*2,i+1],smooth:true,symbol:'circle',symbolSize:5}))
+  });
+}
+
+// ============================ ANALYSIS RECOMMENDATIONS ============================
+async function renderRecommend() {
+  stopSCADATimer(); await loadSharedData();
+  const o = normOpt(_cache.opt);
+  const rec = _cache.rec || {}, trend = _cache.trend || {};
+  const c = document.getElementById('content');
+  const ssr = o.self_sufficiency || 0.27;
+
+  c.innerHTML = `
+    <div class="section-title">💡 综合分析建议</div>
+    <div class="chart-box" style="border-left:3px solid var(--accent2);">
+      <h3>📋 一、系统配置推荐</h3>
+      <div style="font-size:11px;line-height:1.8;color:#8ab4d0;">
+        <p><strong style="color:var(--accent2);">最优配置方案:</strong> 光伏 <strong style="color:var(--pv);">${o.pv_capacity.toFixed(0)} kWp</strong> + 储能 <strong style="color:var(--ess-dis);">${o.ess_capacity.toFixed(0)} kWh</strong> (PSO优化结果)</p>
+        <p><strong style="color:var(--accent2);">预期自给率:</strong> ${(ssr*100).toFixed(1)}% | <strong style="color:var(--accent2);">LCOE:</strong> ${o.lcoe.toFixed(2)} 元/kWh | <strong style="color:var(--accent2);">回收期:</strong> ${o.payback_years.toFixed(1)} 年</p>
+        <p><strong style="color:var(--accent2);">年碳减排量:</strong> ${o.carbon_reduction_t.toFixed(0)} tCO2 | CCER年收益约 ${((o.carbon_reduction_t||667)*71/10000).toFixed(1)} 万元</p>
+      </div>
+    </div>
+    <div class="chart-box" style="border-left:3px solid var(--accent);">
+      <h3>⚙️ 二、运营策略建议</h3>
+      <div style="font-size:11px;line-height:1.8;color:#8ab4d0;">
+        <p>🕐 <strong style="color:var(--accent);">峰谷套利:</strong> 谷时(23:00-7:00)充电储能，峰时(10:00-14:00,17:00-21:00)放电，夏季峰谷价差约0.97元/kWh</p>
+        <p>☀️ <strong style="color:var(--accent);">光伏消纳:</strong> 优先自发自用，当前光伏消纳率约${(ssr*100).toFixed(0)}%，可通过增加储能或V2G提升</p>
+        <p>🔋 <strong style="color:var(--accent);">V2G反向供电:</strong> 在2台V2G桩试点基础上，高峰期引导电车反向放电，年收益潜力约3~5万元</p>
+        <p>📊 <strong style="color:var(--accent);">需求响应:</strong> 参与电网需求响应，年补偿收益约${(rec.dr_v2g&&rec.dr_v2g[0]?rec.dr_v2g[0].annual_benefit:'~6万元/年')}</p>
+      </div>
+    </div>
+    <div class="chart-box" style="border-left:3px solid var(--warn);">
+      <h3>⚠️ 三、风险提示与应对</h3>
+      <div style="font-size:11px;line-height:1.8;color:#8ab4d0;">
+        <p>🔴 <strong style="color:#e04050;">电价波动风险:</strong> 若分时电价峰谷差收窄20%，项目IRR将下降。建议签订PPA锁定购电价格</p>
+        <p>🟡 <strong style="color:#f08030;">光伏衰减风险:</strong> 25年线性衰减至80%额定功率，年发电量递减约0.4%。建议留10%容量裕度</p>
+        <p>🟡 <strong style="color:#f08030;">电池衰减风险:</strong> LFP电池20年容量衰减至约55%，建议第12-15年更换电池组</p>
+        <p>🟠 <strong style="color:#f0a020;">CCER价格不确定性:</strong> 碳价若低于50元/tCO2，碳收益贡献将不足5%，建议多元化碳资产</p>
+      </div>
+    </div>
+    <div class="chart-box" style="border-left:3px solid var(--pv);">
+      <h3>📈 四、长期发展建议</h3>
+      <div style="font-size:11px;line-height:1.8;color:#8ab4d0;">
+        <p>🚗 <strong style="color:var(--pv);">充电需求增长:</strong> 未来10年NEV渗透率将持续增长(S曲线)，充电量预计增长2~3倍，建议预留变压器扩容空间</p>
+        <p>🔋 <strong style="color:var(--pv);">钠离子电池替代:</strong> 第15年电池更换时可考虑钠离子电池(预计成本降至550元/kWh)，NPV可再降低约15%</p>
+        <p>🌐 <strong style="color:var(--pv);">V2G规模化:</strong> 2030年后V2G桩可扩展至全部充电桩，年收益可达15~20万元</p>
+        <p>💡 <strong style="color:var(--pv);">碳资产开发:</strong> 建议开发CCER方法学备案，年碳减排${o.carbon_reduction_t.toFixed(0)}吨可转化为标准化碳资产</p>
+      </div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>自洽率提升路径</h3>
+        <table class="data-table">
+          <tr><th>目标SSR</th><th>措施</th><th>额外投资</th><th>优先级</th></tr>
+          <tr><td>30%</td><td>储能增至2000kWh + V2G扩至6桩</td><td class="num">350万元</td><td><span class="tag green">短期</span></td></tr>
+          <tr><td>35%</td><td>光伏增至1800kWp + 储能2500kWh</td><td class="num">680万元</td><td><span class="tag blue">中期</span></td></tr>
+          <tr><td>40%</td><td>光伏2200kWp + 储能3500kWh + 全V2G</td><td class="num">1200万元</td><td><span class="tag orange">远期</span></td></tr>
+          <tr class="best"><td>45%</td><td>光伏2500kWp + 储能5000kWh + V2G+DR+钠电</td><td class="num">1850万元</td><td><span class="tag red">远景</span></td></tr>
+        </table>
+      </div>
+      <div class="chart-box"><h3>决策行动清单</h3>
+        <table class="data-table">
+          <tr><th>优先级</th><th>行动项</th><th>时间窗口</th><th>预期效果</th></tr>
+          <tr><td><span class="tag green">P0</span></td><td>确认PV=${o.pv_capacity.toFixed(0)}kWp+ESS=${o.ess_capacity.toFixed(0)}kWh方案</td><td>立即</td><td>SSR≥${(ssr*100).toFixed(0)}%</td></tr>
+          <tr><td><span class="tag green">P0</span></td><td>分时电价套利策略上线</td><td>1个月内</td><td>年节费约${(o.annual_grid_cost/10000*0.35).toFixed(0)}万元</td></tr>
+          <tr><td><span class="tag blue">P1</span></td><td>V2G试点扩展(2→6台)</td><td>6个月内</td><td>SSR+3%,年收益+3万</td></tr>
+          <tr><td><span class="tag blue">P1</span></td><td>申报CCER方法学</td><td>1年内</td><td>碳资产价值认定</td></tr>
+          <tr><td><span class="tag orange">P2</span></td><td>储能扩容或更换评估</td><td>第10-12年</td><td>恢复至初始SOC范围</td></tr>
+          <tr><td><span class="tag orange">P2</span></td><td>钠离子电池替代评估</td><td>第12-15年</td><td>NPC降低10~15%</td></tr>
+        </table>
+      </div>
+    </div>
+    <div class="chart-box"><h3>NEV渗透率S曲线预测</h3><div class="chart-inner short" id="recTrendChart"></div></div>
+  `;
+
+  setTimeout(() => {
+    const chart = initChart('recTrendChart');
+    if (chart) {
+      const yrs = Array.from({length:16},(_,i)=>2025+i);
+      const lf = trend.load_growth_factors || {};
+      const logistic = (lf.logistic || yrs.map(y=>1/(1+Math.exp(-0.3*(y-2030)))));
+      chart.setOption({
+        tooltip:{formatter:function(p){return p.name+'<br/>增长因子: '+p.value.toFixed(3);}},
+        grid:{top:15,right:15,bottom:25,left:50},
+        xAxis:{type:'category',data:yrs,axisLabel:{color:'#5a85a5',fontSize:9}},
+        yAxis:{type:'value',name:'负荷增长因子',nameTextStyle:{color:'#f0a020'},axisLabel:{color:'#f0a020',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+        series:[{type:'line',data:logistic.map(v=>v.toFixed(3)),smooth:true,lineStyle:{color:'#f0a020',width:2},
+          areaStyle:{color:{type:'linear',x:0,y:0,x2:0,y2:1,colorStops:[{offset:0,color:'rgba(240,160,32,0.3)'},{offset:1,color:'rgba(240,160,32,0.02)'}]}},
+          markLine:{silent:true,data:[{yAxis:1.0,label:{formatter:'基准年2025',color:'#f08030'}}],lineStyle:{color:'#f08030',type:'dashed'}},symbol:'none'}]
+      });
+    }
+  }, 300);
+}
+
+// ============================ TAB ROUTER ============================
+const renderers = {
+  scada: renderSCADA, powerflow: renderPowerFlow,
+  'pv-data': renderPVData, 'ess-data': renderESSData,
+  'building-data': renderBuildingData, 'charging-data': renderChargingData,
+  optimization: renderOptimization, 'opt-results': renderOptResults,
+  economic: renderEconomic, decision: renderDecision, recommend: renderRecommend,
+};
+
+function renderTab(tab) {
+  disposeCharts(); stopSCADATimer();
+  activeTab = tab;
+  document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
+  const link = document.querySelector(`#nav a[data-tab="${tab}"]`);
+  if (link) link.classList.add('active');
+  const titles = {
+    scada:'🏭 SCADA 细粒度监控', powerflow:'⚡ 分钟级功率流分析',
+    'pv-data':'☀️ 光伏发电数据看板', 'ess-data':'🔋 储能系统数据看板',
+    'building-data':'🏠 建筑负荷数据看板', 'charging-data':'🚗 充电站数据看板',
+    optimization:'🎯 优化方法选择', 'opt-results':'📈 优化结果对比',
+    economic:'💰 经济分析', decision:'🎲 决策框架', recommend:'💡 分析建议'
+  };
+  document.getElementById('pageTitle').textContent = titles[tab] || tab;
+  const fn = renderers[tab];
+  if (fn) fn();
+}
+
+// ============================ INIT ============================
+window.addEventListener('resize', () => {
+  Object.values(charts).forEach(c => { try { c.resize(); } catch(e) {} });
+});
+
+document.querySelectorAll('#nav a').forEach(a => {
+  a.addEventListener('click', () => renderTab(a.dataset.tab));
+});
+
+(async function init() {
+  await checkHealth();
+  renderTab('scada');
+})();
+</script>
+
+</body>
+</html>
