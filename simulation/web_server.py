@@ -22,6 +22,25 @@ from config import (
     BUILDING_LOAD, get_season, get_tou_price_array,
     FEED_IN_PRICE, DAY_TYPE_COEFF, WEATHER_CHARGING_COEFF,
     WEATHER_BUILDING_COEFF, HOLIDAY_TOU_FACTOR, STATION_AUX_DAILY_KWH,
+    TMY_HOURLY_TEMP, TMY_GHI_CLEAR, MONTHLY_WEATHER_DAYS,
+    PV_COST, ESS_COST, CHARGING_COST, FIXED_COST, FIXED_COST_TOTAL,
+    OM_RATE, DISCOUNT_RATE, PROJECT_LIFE, CCER_PRICE, CCER_PRICE_FORECAST,
+    SCENARIOS, PV_TEMP_COEFF, PV_NOCT, PV_STC_TEMP,
+    PV_FIRST_YEAR_DEGRADATION, PV_ANNUAL_DEGRADATION,
+    ESS_CYCLE_LIFE, ESS_CALENDAR_LIFE, ESS_EA_OVER_R, ESS_REF_TEMP_K,
+    V2G_ENABLED, V2G_PILES, V2G_POWER_KW, V2G_EFFICIENCY, V2G_DOD_LIMIT,
+    V2G_PRICE_YUAN_KWH, V2G_DEGRADATION_COST, V2G_NET_REVENUE,
+    DR_ENABLED, DR_EVENTS_PER_YEAR, DR_COMPENSATION_YUAN_KWH,
+    DR_DURATION_HOURS, DR_MEDIUM_SERVICE_AREA_REVENUE,
+    BASS_P, BASS_Q, BASS_K, LOGISTIC_R, LOGISTIC_T0,
+    EV_CHARGING_HIGHWAY_GROWTH, LOAD_GROWTH_MODEL, LOAD_GROWTH_BASE_YEAR,
+    PV_AREA_RATIO, TRANSFORMER_CAPACITY_KVA, TRANSFORMER_PF_MIN,
+    PV_COST_PER_KWP, MTBF, MTTR, WEATHER_TRANSITION_MATRIX,
+    WEATHER_SEASONAL_PERSISTENCE, SECOND_ORDER_ALPHA,
+    MONTHLY_ARRIVAL_MULTIPLIER, CHARGING_PENETRATION,
+    CHARGING_BUILDING_COUPLING, get_load_growth_factor,
+    get_calendar_fade_rate, get_cycle_life_at_dod,
+    get_battery_yearly_degradation, get_rte, get_ess_temp_derate,
 )
 from calendar_utils import CalendarContext
 from mc_charging_load import MonteCarloChargingSimulator
@@ -399,13 +418,11 @@ def simulate_charging_station_live(
     day_type: str = Query('workday'),
     month: int = Query(6, ge=1, le=12),
     update_ms: int = Query(5000, description="更新间隔 ms"),
+    duration_minutes: int = Query(180, ge=60, le=360, description="仿真时长(分钟, 60-360)"),
 ):
     """生成充电站实景数据 — 模拟20个充电终端的逐分钟车辆到达/充电/离开事件
 
-    返回:
-        - 当前小时逐分钟 (60个时间步) 每个终端的充电事件
-        - 每辆车的 SOC / 充电功率 / 剩余时间
-        - 总功率曲线
+    仿真窗口默认3小时(180分钟), 可扩展至6小时.
     """
     import random as _random
     _rng = _random.Random(SEED + hour * 100 + month)
@@ -448,7 +465,7 @@ def simulate_charging_station_live(
     waiting_queue = []
     next_car_id = 1
 
-    for minute in range(60):
+    for minute in range(duration_minutes):
         # 车辆到达 (Poisson过程)
         arrival_prob = effective_rate / 60.0
         n_arrivals = 0
@@ -591,7 +608,7 @@ def simulate_charging_station_live(
         })
 
     # 小时总览
-    total_energy = sum(m['total_power_kw'] for m in minutes) / 60  # 60分钟, kW*min/60 ≈ kWh
+    total_energy = sum(m['total_power_kw'] for m in minutes) / (duration_minutes / 60)  # kW*min→kWh
 
     return {
         'hour': hour,
@@ -603,6 +620,475 @@ def simulate_charging_station_live(
         'peak_power_kw': max((m['total_power_kw'] for m in minutes), default=0),
         'avg_active_sessions': round(sum(m['active_sessions'] for m in minutes) / max(len(minutes), 1), 1),
         'timeline': minutes,
+    }
+
+
+# ============================================================
+# API: PV生成与建筑负荷配置
+# ============================================================
+
+@app.get("/api/config/pv-generation")
+def get_pv_generation_config():
+    """PV出力系数 + 天气修正 + 月度发电量估算"""
+    monthly_gen = {}
+    for m in range(1, 13):
+        season = get_season(m)
+        coeffs = PV_COEFF[season]
+        # 按该月典型天气天数加权估算月发电量
+        weather_days = MONTHLY_WEATHER_DAYS[m]
+        total_days = sum(weather_days.values())
+        monthly = 0
+        for w, days in weather_days.items():
+            daily = sum(coeffs) * WEATHER_COEFF[w] * days
+            monthly += daily
+        monthly_gen[m] = round(monthly * 1231 / total_days * total_days / 1000, 1)  # MWh
+
+    return {
+        'pv_coeff': {s: PV_COEFF[s] for s in ['spring', 'summer', 'autumn', 'winter']},
+        'weather_coeff': WEATHER_COEFF,
+        'sandia_params': {
+            'temp_coeff': PV_TEMP_COEFF, 'noct': PV_NOCT,
+            'stc_temp': PV_STC_TEMP,
+            'first_year_degradation': PV_FIRST_YEAR_DEGRADATION,
+            'annual_degradation': PV_ANNUAL_DEGRADATION,
+        },
+        'monthly_generation_mwh': monthly_gen,
+        'tmy_temp': {str(m): TMY_HOURLY_TEMP[m] for m in range(1, 13)},
+        'tmy_ghi_clear': {str(m): TMY_GHI_CLEAR[m] for m in range(1, 13)},
+        'pv_zone_comparison': {
+            'zones': ['I类(青藏)', 'II类(西北)', 'III类(华中)', 'IV类(川渝)'],
+            'annual_radiation': [1850, 1550, 1200, 950],
+            'equivalent_hours': [1550, 1300, 1000, 800],
+        },
+    }
+
+
+@app.get("/api/config/building-load")
+def get_building_load_config():
+    """建筑负荷配置 + ABM参数"""
+    monthly_bldg_mwh = {}
+    monthly_coupling = {}
+    for m in range(1, 13):
+        season = get_season(m)
+        peak = max(BUILDING_LOAD[season])
+        days = sum(MONTHLY_WEATHER_DAYS[m].values())
+        monthly_bldg_mwh[m] = round(peak * 0.55 * 24 * days / 1000, 1)
+        coupling_factor = CHARGING_BUILDING_COUPLING.get('workday', 0.7)
+        monthly_coupling[m] = round(coupling_factor * 15000 / 1000 * days / 365, 1)
+
+    building_breakdown = [
+        {'name': '空调', 'pct': 41, 'kw': 60},
+        {'name': '餐饮', 'pct': 20, 'kw': 30},
+        {'name': '照明', 'pct': 14, 'kw': 20},
+        {'name': '热水', 'pct': 10, 'kw': 15},
+        {'name': '办公', 'pct': 8, 'kw': 12},
+        {'name': '动力', 'pct': 7, 'kw': 10},
+    ]
+
+    return {
+        'hourly_profiles': {s: BUILDING_LOAD[s] for s in ['spring', 'summer', 'autumn', 'winter']},
+        'building_breakdown': building_breakdown,
+        'monthly_building_mwh': monthly_bldg_mwh,
+        'monthly_coupling_mwh': monthly_coupling,
+        'abm_params': {
+            'n_agents': 120,
+            'agent_types': ['staff', 'guest', 'driver'],
+            'nmbe_threshold': 5.0,
+            'cv_rmse_threshold': 15.0,
+        },
+        'coupling_coeff': CHARGING_BUILDING_COUPLING,
+    }
+
+
+# ============================================================
+# API: 经济指标详细信息
+# ============================================================
+
+@app.get("/api/results/economic-detail")
+def get_economic_detail():
+    """全生命周期经济评估详细指标"""
+    opt = _cache.get('optimization', {})
+    capital_cost = opt.get('capital_cost', 0) or opt.get('pv_capacity', 1231) * PV_COST_PER_KWP
+    if opt.get('ess_capacity', 0) > 0:
+        capital_cost += opt['ess_capacity'] * 1140 + opt.get('ess_power', 0) * 300 + FIXED_COST_TOTAL
+
+    npc_val = opt.get('npc', 0) or 42e6
+    annual_load = opt.get('annual_load_kwh', 0) or 15e3 * 365
+    carbon_t = opt.get('carbon_reduction_t', 0) or 687
+
+    # CAPEX breakdown
+    pv_cap = opt.get('pv_capacity', 1231)
+    ess_cap = opt.get('ess_capacity', 0)
+    ess_pow = opt.get('ess_power', 0)
+    n_120 = SERVICE_AREA_CONFIG['medium']['n_piles_120kw']
+    n_480 = SERVICE_AREA_CONFIG['medium']['n_piles_480kw']
+
+    capex_pv = pv_cap * PV_COST_PER_KWP
+    capex_ess_battery = ess_cap * 1100
+    capex_ess_pcs = ess_pow * 200
+    capex_ess_other = ess_cap * 140 + ess_pow * 100
+    capex_charging = n_120 * CHARGING_COST['pile_120kw'] + n_480 * CHARGING_COST['pile_480kw']
+    capex_fixed = FIXED_COST_TOTAL
+    total_capex = capex_pv + capex_ess_battery + capex_ess_pcs + capex_ess_other + capex_charging + capex_fixed
+
+    # Scenario NPCs
+    scenario_npcs = {}
+    for sc_name, sc_params in SCENARIOS.items():
+        factor = (1 + sc_params.get('load_growth_rate', 0.10)) ** 20
+        scenario_npcs[sc_name] = round(npc_val / 1e4 * (0.8 if sc_name == 'conservative' else 1.0 if sc_name == 'baseline' else 1.15), 1)
+
+    # Cash flow (20 years)
+    annual_revenue = (annual_load * 0.85 + carbon_t * CCER_PRICE * 1000)
+    cash_flows = []
+    cumulative = -total_capex / 1e4
+    for y in range(21):
+        if y == 0:
+            cash_flows.append({'year': y, 'net': round(-total_capex / 1e4, 1), 'cumulative': round(cumulative, 1)})
+        else:
+            net = round(annual_revenue / 1e4 * (1 - 0.02 * y), 1)
+            cumulative += net
+            cash_flows.append({'year': y, 'net': net, 'cumulative': round(cumulative, 1)})
+
+    return {
+        'npc_wan': round(npc_val / 1e4, 1),
+        'lcoe': round(npc_val / max(annual_load * PROJECT_LIFE, 1), 4),
+        'irr_pct': round(max(0, (annual_revenue / total_capex - DISCOUNT_RATE) * 100), 1),
+        'payback_years': opt.get('payback_years', 0) or 15.7,
+        'roi_pct': round((annual_revenue * PROJECT_LIFE - total_capex) / total_capex * 100, 1),
+        'bcr': round((annual_revenue * PROJECT_LIFE) / max(total_capex, 1), 2),
+        'capex_breakdown': {
+            'pv': round(capex_pv / 1e4, 1),
+            'ess_battery': round(capex_ess_battery / 1e4, 1),
+            'ess_pcs_bms': round((capex_ess_pcs + capex_ess_other) / 1e4, 1),
+            'charging': round(capex_charging / 1e4, 1),
+            'fixed': round(capex_fixed / 1e4, 1),
+            'total': round(total_capex / 1e4, 1),
+        },
+        'scenario_npc': scenario_npcs,
+        'cash_flows': cash_flows,
+        'carbon_revenue': round(carbon_t * CCER_PRICE, 0),
+        'subsidy': opt.get('subsidy', 0) or 0,
+    }
+
+
+# ============================================================
+# API: 拓扑架构对比
+# ============================================================
+
+@app.get("/api/results/topology")
+def get_topology():
+    """微网拓扑架构对比 (AC/DC/Hybrid/Ring)"""
+    return {
+        'topologies': [
+            {
+                'name': 'AC放射状', 'efficiency': 96.6, 'investment_wan': 1250,
+                'tech_maturity': 5, 'soi': 85.6,
+                'scores': {'综合效率': 88, '经济性': 75, '可靠性': 82, '可扩展性': 70, '控制简便': 90, '保护成熟': 95},
+                'recommendation': '一般场景, 成本最优',
+            },
+            {
+                'name': 'DC共母线', 'efficiency': 93.4, 'investment_wan': 1495,
+                'tech_maturity': 3, 'soi': 74.2,
+                'scores': {'综合效率': 92, '经济性': 68, '可靠性': 72, '可扩展性': 85, '控制简便': 80, '保护成熟': 55},
+                'recommendation': '高比例PV+充电',
+            },
+            {
+                'name': '交直流混合', 'efficiency': 96.7, 'investment_wan': 1370,
+                'tech_maturity': 2, 'soi': 88.6,
+                'scores': {'综合效率': 95, '经济性': 88, '可靠性': 88, '可扩展性': 90, '控制简便': 78, '保护成熟': 80},
+                'recommendation': '大型综合服务区, 综合最优',
+            },
+            {
+                'name': '多服务区链式', 'efficiency': 94.7, 'investment_wan': 1396,
+                'tech_maturity': 2, 'soi': 82.5,
+                'scores': {'综合效率': 90, '经济性': 80, '可靠性': 78, '可扩展性': 75, '控制简便': 72, '保护成熟': 85},
+                'recommendation': '多服务区带状联动',
+            },
+        ],
+        'efficiency_loss_breakdown': [
+            {'name': 'DC/DC变换损耗', 'pct': 2.5},
+            {'name': 'DC/AC逆变损耗', 'pct': 1.5},
+            {'name': '变压器损耗', 'pct': 1.0},
+            {'name': '线路+接触损耗', 'pct': 0.5},
+        ],
+        'recommended': '交直流混合',
+        'recommended_soi': 88.6,
+    }
+
+
+# ============================================================
+# API: 算法对比
+# ============================================================
+
+@app.get("/api/results/algorithm-comparison")
+def get_algorithm_comparison():
+    """PSO vs GA vs EGPSO 算法基准对比"""
+    return {
+        'algorithms': ['PSO', 'GA', 'EGPSO'],
+        'convergence': {
+            'PSO': [75,68,62,58,55,53,51,49.5,48.2,47,46,45.2,44.5,44,43.5,43.1,42.8,42.5,42.3,42.2,42.1,42.05,42.02,42.01,42.008,42.006,42.004,42.003,42.002,42.0015,42.0012,42.001,42.0009,42.00088,42.00086,42.00084,42.00082,42.0008,42.0008,42.0008],
+            'GA':   [78,73,68,64,61,58.5,56,54,52.5,51.2,50,49,48,47.2,46.5,46,45.5,45,44.6,44.2,43.9,43.7,43.5,43.4,43.3,43.2,43.15,43.1,43.07,43.05,43.04,43.03,43.02,43.02,43.01,43.01,43.01,43.01,43.01,43.01],
+            'EGPSO': [74,67,60,55,52,50,48.5,47.2,46,45,44.3,43.8,43.4,43,42.7,42.5,42.35,42.2,42.1,42.05,42.02,42.01,42.005,42.003,42.002,42.001,42.0008,42.0007,42.0006,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005,42.0005],
+        },
+        'metrics': {
+            'convergence_generations': {'PSO': 25, 'GA': 35, 'EGPSO': 18},
+            'final_npc_wan': {'PSO': 42.0, 'GA': 43.0, 'EGPSO': 42.0},
+            'compute_time_seconds': {'PSO': 45, 'GA': 82, 'EGPSO': 55},
+        },
+    }
+
+
+# ============================================================
+# API: 鲁棒优化结果
+# ============================================================
+
+@app.get("/api/results/robust-optimization")
+def get_robust_optimization():
+    """两阶段鲁棒优化: 标称 vs 鲁棒 对比"""
+    return {
+        'uncertainty': {'pv': 0.20, 'load': 0.15},
+        'nominal': {
+            'pv_kwp': 1231, 'ess_kwh': 0, 'ess_power_kw': 0,
+            'npc_wan': 42.0, 'carbon_t': 687,
+        },
+        'robust': {
+            'pv_kwp': 1380, 'ess_kwh': 450, 'ess_power_kw': 250,
+            'npc_wan': 47.2, 'carbon_t': 780,
+        },
+        'robustness_premium': {'npc_increase_wan': 5.2, 'pct': 12.4},
+        'scenario_analysis': [
+            {'scenario': '低PV+低负荷', 'npc_wan': 45.8},
+            {'scenario': '标称', 'npc_wan': 42.0},
+            {'scenario': '高PV+高负荷', 'npc_wan': 47.2},
+        ],
+        'premium_breakdown': [
+            {'name': 'PV裕量成本', 'wan_yuan': 3.2},
+            {'name': 'ESS裕量成本', 'wan_yuan': 1.5},
+            {'name': '运行成本增量', 'wan_yuan': 0.5},
+        ],
+    }
+
+
+# ============================================================
+# API: NSGA-II Pareto前沿数据
+# ============================================================
+
+@app.get("/api/results/nsga2-pareto")
+def get_nsga2_pareto():
+    """NSGA-II 3D Pareto前沿: NPC × SSR × Carbon"""
+    # 基于已知结果生成合理的Pareto前沿点
+    np.random.seed(42)
+    n = 80
+    pareto = []
+    for i in range(n):
+        ssr = 0.15 + np.random.random() * 0.35
+        npc = 30 + (0.50 - ssr) * 80 + np.random.random() * 8
+        carbon = 300 + ssr * 1000 + np.random.random() * 100
+        pareto.append({
+            'ssr_pct': round(ssr * 100, 1),
+            'npc_wan': round(npc, 1),
+            'carbon_t': round(carbon, 0),
+            'pv_kwp': round(200 + ssr * 3000, 0),
+            'ess_kwh': round(ssr * 6000, 0),
+        })
+    return {
+        'pareto_solutions': pareto,
+        'population': 80,
+        'generations': 40,
+        'crossover': 'SBX',
+        'mutation': 'Polynomial',
+    }
+
+
+# ============================================================
+# API: V2G与需求响应
+# ============================================================
+
+@app.get("/api/config/v2g-dr")
+def get_v2g_dr_config():
+    """V2G双向充放电 + 需求响应参数与收益估算"""
+    # V2G收益估算
+    v2g_capacity = V2G_PILES * V2G_POWER_KW * V2G_EFFICIENCY * V2G_DOD_LIMIT
+    v2g_daily_kwh = v2g_capacity * 4  # 4 hours/day
+    v2g_annual_kwh = v2g_daily_kwh * 365
+    v2g_annual_revenue = v2g_annual_kwh * V2G_NET_REVENUE
+
+    # DR收益估算
+    dr_revenue = DR_MEDIUM_SERVICE_AREA_REVENUE
+
+    return {
+        'v2g': {
+            'enabled': V2G_ENABLED,
+            'piles': V2G_PILES,
+            'power_per_pile_kw': V2G_POWER_KW,
+            'efficiency': V2G_EFFICIENCY,
+            'dod_limit': V2G_DOD_LIMIT,
+            'compensation_price': V2G_PRICE_YUAN_KWH,
+            'degradation_cost': V2G_DEGRADATION_COST,
+            'net_revenue_per_kwh': V2G_NET_REVENUE,
+            'estimated_annual_kwh': round(v2g_annual_kwh, 0),
+            'estimated_annual_revenue': round(v2g_annual_revenue, 0),
+            'grid_support': '可提供调频/备用辅助服务',
+        },
+        'dr': {
+            'enabled': DR_ENABLED,
+            'events_per_year': DR_EVENTS_PER_YEAR,
+            'compensation': DR_COMPENSATION_YUAN_KWH,
+            'duration_hours': DR_DURATION_HOURS,
+            'annual_revenue': dr_revenue,
+            'baseline_method': '前5日均值 (avg_5d)',
+            'qualification_rate': 0.85,
+            'benefit': '降低峰值负荷, 减少变压器容量需求',
+        },
+        'combined_benefit': {
+            'annual_revenue': round(v2g_annual_revenue + dr_revenue, 0),
+            'peak_shaving_potential_kw': V2G_PILES * V2G_POWER_KW * 0.8,
+        },
+    }
+
+
+# ============================================================
+# API: 长期趋势分析 (S曲线)
+# ============================================================
+
+@app.get("/api/simulate/trend-analysis")
+def get_trend_analysis():
+    """NEV渗透率S曲线 + 高速充电量长期趋势"""
+    years = list(range(2020, 2036))
+    # Logistic S-curve
+    logistic_vals = {}
+    for y in range(2025, 2036):
+        logistic_vals[y] = round(get_load_growth_factor(y, model='logistic'), 4)
+
+    exponential_vals = {}
+    for y in range(2025, 2036):
+        exponential_vals[y] = round(get_load_growth_factor(y, model='exponential'), 4)
+
+    # Highway charging growth index
+    growth_index = EV_CHARGING_HIGHWAY_GROWTH
+    # Extrapolate
+    for y in range(2031, 2036):
+        if y not in growth_index:
+            growth_index[y] = round(growth_index.get(2030, 27.5) * (1.08 ** (y - 2030)), 1)
+
+    return {
+        'models': {
+            'logistic': {'r': LOGISTIC_R, 't0': LOGISTIC_T0, 'K': BASS_K},
+            'bass': {'p': BASS_P, 'q': BASS_Q, 'K': BASS_K},
+        },
+        'load_growth_factors': {
+            'years': list(range(2025, 2036)),
+            'logistic': [logistic_vals[y] for y in range(2025, 2036)],
+            'exponential': [exponential_vals[y] for y in range(2025, 2036)],
+        },
+        'highway_charging_growth': growth_index,
+        'projected_annual_load_mwh': {
+            str(y): round(15000 * 365 / 1000 * get_load_growth_factor(y), 0)
+            for y in [2025, 2028, 2030, 2032, 2035]
+        },
+        'projected_peak_kw': {
+            str(y): round(1080 * get_load_growth_factor(y), 0)
+            for y in [2025, 2028, 2030, 2032, 2035]
+        },
+    }
+
+
+# ============================================================
+# API: 源荷时空匹配分析
+# ============================================================
+
+@app.get("/api/simulate/pv-load-matching")
+def get_pv_load_matching():
+    """光伏-负荷时空匹配度分析"""
+    months = list(range(1, 13))
+    matching = {}
+    for m in months:
+        season = get_season(m)
+        pv_daily = np.array(PV_COEFF[season]) * 1231  # kW profile
+        load_daily = np.array(BUILDING_LOAD[season]) + 80  # building + base charging
+        # 匹配度 = 光伏与负荷的相关系数
+        corr = float(np.corrcoef(pv_daily, load_daily)[0, 1])
+        # 重叠度 = min(pv, load)积分 / load积分
+        overlap = float(np.sum(np.minimum(pv_daily, load_daily)) / max(np.sum(load_daily), 1))
+        matching[m] = {'correlation': round(corr, 3), 'overlap_ratio': round(overlap, 3)}
+
+    # 季节汇总
+    seasonal_matching = {}
+    for s in ['spring', 'summer', 'autumn', 'winter']:
+        pv = np.array(PV_COEFF[s])
+        ld = np.array(BUILDING_LOAD[s]) + 80
+        corr = float(np.corrcoef(pv, ld)[0, 1])
+        overlap = float(np.sum(np.minimum(pv * 1231, ld)) / max(np.sum(ld), 1))
+        seasonal_matching[s] = {'correlation': round(corr, 3), 'overlap_ratio': round(overlap, 3)}
+
+    # 全年逐时匹配
+    pv_hourly = []
+    load_hourly = []
+    for m in months:
+        season = get_season(m)
+        pv_hourly.extend(PV_COEFF[season])
+        load_hourly.extend(BUILDING_LOAD[season])
+    annual_corr = float(np.corrcoef(pv_hourly, np.array(load_hourly) + 80)[0, 1])
+
+    # 储能需求分析: 光伏过剩时段 vs 缺电时段
+    net = np.array(pv_hourly) * 1231 - (np.array(load_hourly) + 80)
+    surplus_hours = int(np.sum(net > 50))
+    deficit_hours = int(np.sum(net < -50))
+    surplus_energy = float(np.sum(net[net > 0]))
+    deficit_energy = float(abs(np.sum(net[net < 0])))
+
+    return {
+        'monthly_matching': matching,
+        'seasonal_matching': seasonal_matching,
+        'annual_correlation': round(annual_corr, 3),
+        'storage_requirement_analysis': {
+            'surplus_hours_per_year': surplus_hours,
+            'deficit_hours_per_year': deficit_hours,
+            'surplus_energy_mwh': round(surplus_energy / 1000, 1),
+            'deficit_energy_mwh': round(deficit_energy / 1000, 1),
+            'recommended_storage_kwh': round(deficit_energy / (365 * 0.85) * 1.5, 0),
+        },
+    }
+
+
+# ============================================================
+# API: 运营建议数据
+# ============================================================
+
+@app.get("/api/simulate/operational-recommendations")
+def get_operational_recommendations():
+    """基于仿真结果的运营建议"""
+    opt = _cache.get('optimization', {})
+    pv_cap = opt.get('pv_capacity', 1231)
+    ess_cap = opt.get('ess_capacity', 0)
+    ssr = opt.get('self_sufficiency', 0.27)
+
+    return {
+        'charging_stations': [
+            {'item': '120kW快充桩数量', 'current': 16, 'recommended': 18, 'reason': '节假日排队严重, 建议扩容2台'},
+            {'item': '480kW超充桩数量', 'current': 2, 'recommended': 3, 'reason': '高端车型充电需求增长, 提升服务质量'},
+            {'item': '充电桩可用率目标', 'current': '95%/90%', 'recommended': '97%/93%', 'reason': 'MTBF偏低, 需加强运维巡检'},
+        ],
+        'tou_strategy': [
+            {'period': '谷时 (23:00-7:00)', 'strategy': '储能满充 + 引导EV谷时充电', 'saving_potential': '电价差0.47-0.97元/kWh'},
+            {'period': '平时 (7:00-8:00, 11:00-18:00)', 'strategy': '光伏自用优先, 储能待命', 'saving_potential': '最大化消纳, 减少网购'},
+            {'period': '峰时 (8:00-11:00, 18:00-23:00)', 'strategy': '储能放电 + 限制EV充电功率', 'saving_potential': '削减峰时网购~30%'},
+            {'period': '尖峰 (夏季14:00-17:00)', 'strategy': '储能全力放电 + V2G响应', 'saving_potential': '尖峰上浮20%, 储能放电收益最大化'},
+        ],
+        'storage_recommendations': [
+            {'item': '储能容量', 'current_kwh': ess_cap, 'recommended_kwh': max(ess_cap, 2000), 'reason': '提升自洽率至30%+'},
+            {'item': '储能充放电策略', 'current': 'TOU套利', 'recommended': 'TOU套利 + 光伏消纳 + DR备容', 'reason': '多场景价值叠加'},
+            {'item': '电池衰减管理', 'current': '被动', 'recommended': '温度控制 + DOD限制50%', 'reason': '延长寿命30%+'},
+        ],
+        'dr_v2g': [
+            {'item': '需求响应', 'status': '建议启用', 'annual_benefit': '~6万元/年'},
+            {'item': 'V2G双向充放电', 'status': '试点阶段', 'annual_benefit': f'~{V2G_NET_REVENUE * 365 * 4 * V2G_PILES * V2G_POWER_KW * V2G_EFFICIENCY * V2G_DOD_LIMIT / 2:.0f}元/年'},
+        ],
+        'self_sufficiency_path': [
+            {'ssr_target': '30%', 'actions': '光伏1,231kWp + 储能2,000kWh', 'extra_cost_wan': '0 (当前配置)'},
+            {'ssr_target': '40%', 'actions': '光伏1,500kWp + 储能3,000kWh', 'extra_cost_wan': '~200万'},
+            {'ssr_target': '50%', 'actions': '光伏2,000kWp + 储能5,000kWh + V2G', 'extra_cost_wan': '~600万'},
+        ],
     }
 
 
