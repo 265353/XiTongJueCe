@@ -1,6 +1,36 @@
 # Handover — 高速服务区光储充一体化仿真
 
-> 最后更新: 2026-06-21 (v6.5, 3项待解决限制全部修复)
+> 最后更新: 2026-06-22 (v6.5, 3项限制修复 + 73项测试 + README更新)
+
+---
+
+## [2026-06-22] v6.5 系统改进 — 测试基础设施 + README全面更新
+
+**Branch**: master | **Changed by**: 265353 | **Mode**: full (3 files, +862/-115)
+
+### What Changed
+
+| File | Category | Description |
+|------|----------|-------------|
+| `test_economic_model.py` | Feature | 经济模型单元测试 (58 cases) — 覆盖CAPEX/补贴/OPEX/碳交易/更换/NPC/LCOE/回收期/ROI/BCR/情景/Arrhenius退化/DOD循环寿命/复合退化/边界条件 |
+| `test_capacity_optimization.py` | Feature | 调度回归测试 (15 cases) — 纯光伏/TOU套利/SOC边界/变压器约束/预测误差/温度效应/跨天连续/自放电 |
+| `README.md` | Docs | 全面更新至v6.5 — 目录结构(含测试)/8步流程/13图清单/7版本历史/关键结果/测试运行说明/新增文献引用 |
+
+### Why
+
+系统评估发现测试覆盖为D级(最弱项)且README滞后于v6.3-v6.5新功能。补齐后测试从0→73项, README从v4→v6.5。
+
+### Conflict Analysis
+
+| Severity | Type | Detail |
+|----------|------|--------|
+| NONE | Signature | 所有新增参数均有默认值, 5个外部调用方(microgrid_frontend/interactive_dashboard/main)兼容 |
+| NONE | Import | test文件仅import已存在模块, 无循环依赖 |
+| NONE | Config | 测试使用pytest fixtures, 不修改全局状态 |
+
+### Design Decision Impact
+
+无 CLAUDE.md。测试遵循标准的 pytest 模式(模块级fixture共享MC仿真结果)。
 
 ---
 
