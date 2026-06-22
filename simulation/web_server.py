@@ -35,8 +35,9 @@ RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
 SEED = 42
 
-# 全局缓存: 启动时加载已有结果
+# 全局缓存: 启动时加载已有结果 + 预计算MC/8760h
 _cache = {}
+_sim_cache = {}  # 预计算的重仿真数据
 
 
 def load_json(filename):
@@ -47,12 +48,45 @@ def load_json(filename):
     return None
 
 
+def _build_sim_cache():
+    """预计算MC和8760h序列, 避免每次API调用重复仿真"""
+    print("Pre-computing simulation cache (MC + 8760h sequence)...")
+    cal = CalendarContext(seed=SEED)
+    mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
+    mc = mc_sim.simulate_all_scenarios(n_runs=200)  # 快速
+    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc, seed=SEED, calendar_ctx=cal)
+    opt_result = _cache.get('optimization', {})
+    pv_cap = opt_result.get('pv_capacity', 1231)
+    ess_cap = opt_result.get('ess_capacity', 2000)
+    ess_pow = opt_result.get('ess_power', 1000)
+    opt.pv_capacity = pv_cap
+    opt.ess_capacity = ess_cap
+    opt.ess_power = ess_pow
+    pv_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+    _sim_cache['calendar'] = cal
+    _sim_cache['opt'] = opt
+    _sim_cache['mc'] = mc
+    _sim_cache['pv_seq'] = pv_seq
+    _sim_cache['load_seq'] = load_seq
+    _sim_cache['tou_seq'] = tou_seq
+    _sim_cache['seasons_seq'] = seasons_seq
+    _sim_cache['pv_cap'] = pv_cap
+    _sim_cache['ess_cap'] = ess_cap
+    _sim_cache['ess_pow'] = ess_pow
+    print(f"  OK: PV={pv_cap}kWp ESS={ess_cap}kWh/{ess_pow}kW")
+
+
 @app.on_event("startup")
 def startup():
     _cache['mc_summary'] = load_json('mc_summary.json')
     _cache['optimization'] = load_json('optimization_result.json')
     _cache['pareto'] = load_json('pareto_results.json')
     _cache['decision'] = load_json('decision_result.json')
+    _cache['daily_8760h'] = load_json('daily_8760h.json')
+    try:
+        _build_sim_cache()
+    except Exception as e:
+        print(f"  WARN: Sim cache build failed: {e}")
 
 
 # ============================================================
@@ -148,20 +182,27 @@ def simulate_dispatch_day(
     ess_pow: float = Query(1000, description="储能力率 kW"),
     day: int = Query(200, description="一年中的第几天 (0-364)"),
 ):
-    """仿真单日调度, 返回24h逐时数据"""
-    calendar_ctx = CalendarContext(seed=SEED)
-    mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
-    mc_scenarios = mc_sim.simulate_all_scenarios(n_runs=500)
+    """仿真单日调度, 返回24h逐时数据 (使用预计算缓存, 秒级响应)"""
+    # 使用预计算的8760h序列
+    if not _sim_cache:
+        return JSONResponse({"error": "Simulation cache not ready"}, status_code=503)
 
-    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
-                              calendar_ctx=calendar_ctx)
-    opt.pv_capacity = pv_cap
-    opt.ess_capacity = ess_cap
-    opt.ess_power = ess_pow
+    pv_seq = _sim_cache['pv_seq']
+    load_seq = _sim_cache['load_seq']
+    tou_seq = _sim_cache['tou_seq']
+    seasons_seq = _sim_cache['seasons_seq']
+    cal = _sim_cache['calendar']
+    opt = _sim_cache['opt']
 
-    pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+    # 如果参数与缓存不同, 更新容量
+    if abs(pv_cap - _sim_cache['pv_cap']) > 1 or abs(ess_cap - _sim_cache['ess_cap']) > 1:
+        opt.pv_capacity = pv_cap
+        opt.ess_capacity = ess_cap
+        opt.ess_power = ess_pow
+
+    day = max(0, min(364, day))
     season = seasons_seq[day * 24]
-    pv_profile = pv_coeff_seq[day * 24:(day + 1) * 24] * pv_cap
+    pv_profile = pv_seq[day * 24:(day + 1) * 24] * pv_cap
     load_profile = load_seq[day * 24:(day + 1) * 24]
     tou_hourly = tou_seq[day * 24:(day + 1) * 24]
 
@@ -190,9 +231,9 @@ def simulate_dispatch_day(
         'config': {'pv_cap': pv_cap, 'ess_cap': ess_cap, 'ess_pow': ess_pow},
         'day_info': {
             'day': day,
-            'month': calendar_ctx.month_of_day[day],
-            'day_type': calendar_ctx.day_types[day],
-            'weather': calendar_ctx.weather_seq[day],
+            'month': cal.month_of_day[day],
+            'day_type': cal.day_types[day],
+            'weather': cal.weather_seq[day],
             'season': season,
         },
         'hourly': hourly,
@@ -215,18 +256,21 @@ def simulate_year_summary(
     ess_cap: float = Query(2000),
     ess_pow: float = Query(1000),
 ):
-    """仿真全年365天调度汇总"""
-    calendar_ctx = CalendarContext(seed=SEED)
-    mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
-    mc_scenarios = mc_sim.simulate_all_scenarios(n_runs=1000)
+    """仿真全年365天调度汇总 (使用预计算缓存)"""
+    if not _sim_cache:
+        return JSONResponse({"error": "Simulation cache not ready"}, status_code=503)
 
-    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc_scenarios, seed=SEED,
-                              calendar_ctx=calendar_ctx)
-    opt.pv_capacity = pv_cap
-    opt.ess_capacity = ess_cap
-    opt.ess_power = ess_pow
+    pv_seq = _sim_cache['pv_seq']
+    load_seq = _sim_cache['load_seq']
+    tou_seq = _sim_cache['tou_seq']
+    seasons_seq = _sim_cache['seasons_seq']
+    cal = _sim_cache['calendar']
+    opt = _sim_cache['opt']
 
-    pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+    if abs(pv_cap - _sim_cache['pv_cap']) > 1:
+        opt.pv_capacity = pv_cap
+        opt.ess_capacity = ess_cap
+        opt.ess_power = ess_pow
 
     daily_results = []
     ts = {'pv_gen': 0, 'load': 0, 'grid_import': 0, 'grid_export': 0, 'grid_cost': 0}
@@ -238,7 +282,7 @@ def simulate_year_summary(
 
     for d in range(365):
         season = seasons_seq[d * 24]
-        pv_profile = pv_coeff_seq[d * 24:(d + 1) * 24] * pv_cap
+        pv_profile = pv_seq[d * 24:(d + 1) * 24] * pv_cap
         load_profile = load_seq[d * 24:(d + 1) * 24]
         tou_hourly = tou_seq[d * 24:(d + 1) * 24]
         result = opt.simulate_daily_operation(pv_profile, load_profile, season, tou_prices=tou_hourly)
@@ -252,10 +296,10 @@ def simulate_year_summary(
 
         daily_results.append({
             'day': d,
-            'month': calendar_ctx.month_of_day[d],
+            'month': cal.month_of_day[d],
             'season': season,
-            'day_type': calendar_ctx.day_types[d],
-            'weather': calendar_ctx.weather_seq[d],
+            'day_type': cal.day_types[d],
+            'weather': cal.weather_seq[d],
             'pv_gen': round(pv_day, 1),
             'load': round(load_day, 1),
             'grid_import': round(grid_imp, 1),
@@ -271,7 +315,7 @@ def simulate_year_summary(
         ts['grid_export'] += grid_exp
         ts['grid_cost'] += cost
 
-        m = calendar_ctx.month_of_day[d] - 1
+        m = cal.month_of_day[d] - 1
         monthly_pv[m] += pv_day
         monthly_load[m] += load_day
         monthly_grid[m] += grid_imp
@@ -293,7 +337,7 @@ def simulate_year_summary(
             'grid': monthly_grid.tolist(),
             'ssr': [round(float(v), 4) for v in monthly_ssr],
         },
-        'daily': daily_results[::7],  # 每周采样
+        'daily': daily_results[::7],
     }
 
 

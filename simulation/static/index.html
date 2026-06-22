@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>高速服务区光储充一体化微网 — 仿真系统 v6.5</title>
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts-gl@2.0.9/dist/echarts-gl.min.js"></script>
 <style>
 :root {
   --bg: #0a1628; --panel: #0f1f38; --border: #1a3a5a; --text: #8ab4d0;
@@ -1349,8 +1350,8 @@ async function renderDispatch() {
       </div>
     </div>
   `;
-  setTimeout(() => loadDispatchChart(), 100);
-  loadDispatchMonthlyChart();
+  document.getElementById('dispMetrics').innerHTML = '<div class="loading">加载调度数据中...</div>';
+  setTimeout(() => { loadDispatchChart(); loadDispatchMonthlyChart(); }, 200);
 }
 
 async function loadDispatchChart() {
@@ -1474,7 +1475,8 @@ function renderSCADA() {
       </div>
     </div>
   `;
-  loadSCADAData();
+  document.getElementById('scadaSLD').innerHTML = '<div class="loading">加载SCADA数据中...</div>';
+  setTimeout(() => loadSCADAData(), 200);
 }
 
 let scadaData = null, scadaTimer = null, scadaPlaying = false;
@@ -1715,6 +1717,13 @@ function drawLiveCanvas(data, timeIdx) {
   const h = canvas.height = canvas.clientHeight;
   const ctx = canvas.getContext('2d');
 
+  // MUST read snapshot FIRST, before drawing parking spots
+  const snapshot = data.timeline?.[timeIdx] || data.timeline?.[0];
+  liveStationCars = snapshot?.piles_detail || [];
+
+  // Build quick lookup: which piles are occupied
+  const occupiedSet = new Set(liveStationCars.map(c => c.pile_idx));
+
   // Background
   ctx.fillStyle = '#0a1a10';
   ctx.fillRect(0, 0, w, h);
@@ -1743,8 +1752,7 @@ function drawLiveCanvas(data, timeIdx) {
     const spotW = colW * 0.8;
     const spotH = h * 0.2;
 
-    // Parking spot background
-    const occupied = liveStationCars.some(c => c.pile_idx === i);
+    const occupied = occupiedSet.has(i);
     ctx.fillStyle = occupied ? 'rgba(240,160,32,0.15)' : 'rgba(255,255,255,0.03)';
     ctx.strokeStyle = pile.type === '480kW' ? '#e04050' : '#4a8a4a';
     ctx.lineWidth = pile.type === '480kW' ? 2 : 1;
@@ -1766,9 +1774,7 @@ function drawLiveCanvas(data, timeIdx) {
   });
 
   // Draw cars in active sessions
-  const snapshot = data.timeline?.[timeIdx] || data.timeline?.[0];
   if (snapshot?.piles_detail) {
-    liveStationCars = snapshot.piles_detail;
     snapshot.piles_detail.forEach(car => {
       const pileIdx = car.pile_idx;
       const col = pileIdx % nCols;
