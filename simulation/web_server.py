@@ -38,6 +38,7 @@ from config import (
     PV_COST_PER_KWP, MTBF, MTTR, WEATHER_TRANSITION_MATRIX,
     WEATHER_SEASONAL_PERSISTENCE, SECOND_ORDER_ALPHA,
     MONTHLY_ARRIVAL_MULTIPLIER, CHARGING_PENETRATION,
+    HOURLY_ARRIVAL_RATE,
     CHARGING_BUILDING_COUPLING, get_load_growth_factor,
     get_calendar_fade_rate, get_cycle_life_at_dod,
     get_battery_yearly_degradation, get_rte, get_ess_temp_derate,
@@ -620,6 +621,493 @@ def simulate_charging_station_live(
         'peak_power_kw': max((m['total_power_kw'] for m in minutes), default=0),
         'avg_active_sessions': round(sum(m['active_sessions'] for m in minutes) / max(len(minutes), 1), 1),
         'timeline': minutes,
+    }
+
+
+@app.get("/api/simulate/fine-grained-scada")
+def simulate_fine_grained_scada(
+    day: int = Query(200, ge=0, le=364, description="起始日 (0-364)"),
+    n_days: int = Query(1, ge=1, le=7, description="仿真天数"),
+    weather: str = Query('auto', description="天气: auto/clear/partly_cloudy/cloudy/overcast/rain"),
+    month_override: int = Query(0, ge=0, le=12, description="月份覆盖 (0=自动)"),
+):
+    """细粒度SCADA仿真 — 分钟级全组件数据 (PV/ESS/建筑/充电/电网)
+
+    生成逐分钟数据, 包含:
+    - 光伏: 分钟级辐照度+云层瞬态+温度效应 (Sandia模型)
+    - 储能: 分钟级SOC+充放电功率
+    - 建筑: 分项负荷 (空调/餐饮/照明/热水/办公/动力)
+    - 充电: 逐桩车辆到达/充电/离开 (集成充电站实景)
+    - 电网: 购电/售电+变压器负载率
+    - 天气: 分钟级GHI/DNI/温度/云量
+    """
+    import random as _random
+    _rng = _random.Random(SEED + day * 137 + n_days * 31)
+
+    # 日历上下文
+    cal = CalendarContext(seed=SEED)
+    if month_override > 0:
+        actual_month = month_override
+    else:
+        actual_month = cal.month_of_day[min(day, 364)]
+
+    # 天气确定
+    actual_weather = weather
+    if weather == 'auto':
+        actual_weather = cal.weather_seq[min(day, 364)]
+
+    season = get_season(actual_month)
+    day_type = cal.day_types[min(day, 364)]
+
+    # ---- 分钟级PV仿真 ----
+    # 基准PV系数 (24h → 1440min)
+    pv_coeffs_24h = PV_COEFF[season]
+    pv_minute_coeffs = []
+    for h in range(24):
+        base = pv_coeffs_24h[h]
+        # 小时内线性插值
+        for m in range(60):
+            t = m / 60.0
+            next_h = (h + 1) % 24
+            next_base = pv_coeffs_24h[next_h] if next_h < 24 else 0
+            val = base + (next_base - base) * t
+            pv_minute_coeffs.append(val)
+
+    # 云层瞬态模型: 用随机游走模拟分钟级云量波动
+    cloud_cover = []
+    cloud_base = {'clear': 0.05, 'partly_cloudy': 0.28, 'cloudy': 0.55, 'overcast': 0.78, 'rain': 0.90}.get(actual_weather, 0.28)
+    cloud_vol = {'clear': 0.03, 'partly_cloudy': 0.08, 'cloudy': 0.06, 'overcast': 0.04, 'rain': 0.03}.get(actual_weather, 0.06)
+    cloud_val = cloud_base
+    for m in range(1440 * n_days):
+        cloud_val += _rng.gauss(0, cloud_vol)
+        cloud_val = max(0.0, min(1.0, cloud_val))
+        # 均值回归
+        cloud_val += (cloud_base - cloud_val) * 0.02
+        cloud_cover.append(round(cloud_val, 3))
+
+    # 温度模型 (分钟级, 基于TMY小时温度插值)
+    temps_hourly = TMY_HOURLY_TEMP.get(actual_month, TMY_HOURLY_TEMP.get(6, [25]*24))
+    temp_minute = []
+    for h in range(24):
+        base_t = temps_hourly[min(h, 23)]
+        next_t = temps_hourly[min((h + 1) % 24, 23)]
+        for m in range(60):
+            t = m / 60.0
+            temp_minute.append(base_t + (next_t - base_t) * t)
+    temp_minute = temp_minute * n_days
+
+    # GHI计算 (Sandia简单模型: GHI = GHI_clear * (1 - Kc * cloud))
+    ghi_clear = TMY_GHI_CLEAR.get(actual_month, TMY_GHI_CLEAR.get(6, [800]*24))
+    ghi_minute = []
+    for h in range(24):
+        base_g = ghi_clear[min(h, 23)]
+        next_g = ghi_clear[min((h + 1) % 24, 23)]
+        for m in range(60):
+            t = m / 60.0
+            ghi_minute.append(base_g + (next_g - base_g) * t)
+    ghi_minute = ghi_minute * n_days
+
+    # 实际PV出力 (分钟级, kW)
+    pv_cap = _sim_cache.get('pv_cap', 1231) if _sim_cache else 1231
+    pv_kw_minute = []
+    for m in range(1440 * n_days):
+        day_min = m % 1440
+        cloud = cloud_cover[m]
+        temp = temp_minute[m]
+        ghi = ghi_minute[day_min]
+        # Kasten-Czeplak: clear-sky attenuation
+        kc = 0.75 if cloud < 0.3 else 0.55 if cloud < 0.6 else 0.35 if cloud < 0.85 else 0.15
+        actual_ghi = ghi * (1 - cloud * kc)
+        # PV output = rated * coeff * (GHI/1000) * temp_derate
+        temp_derate = 1.0 - PV_TEMP_COEFF * (temp - PV_STC_TEMP)
+        temp_derate = max(0.85, min(1.05, temp_derate))
+        pv_kw = pv_cap * pv_minute_coeffs[day_min] * (actual_ghi / 1000.0) * temp_derate if ghi > 10 else 0
+        pv_kw = max(0, pv_kw * _rng.gauss(1.0, 0.02))
+        pv_kw_minute.append(round(pv_kw, 1))
+
+    # ---- 分钟级建筑负荷 ----
+    bldg_24h = BUILDING_LOAD[season]
+    weather_bldg_factor = WEATHER_BUILDING_COEFF.get(actual_weather, 1.0)
+    # 分项分解
+    bldg_components = {
+        '空调': 0.41, '餐饮': 0.20, '照明': 0.14,
+        '热水': 0.10, '办公': 0.08, '动力': 0.07,
+    }
+    bldg_total_minute = []
+    bldg_detail_minute = {k: [] for k in bldg_components}
+    for h in range(24):
+        base = bldg_24h[h] * weather_bldg_factor
+        next_h = (h + 1) % 24
+        next_base = bldg_24h[next_h] * weather_bldg_factor
+        for m in range(60):
+            t = m / 60.0
+            val = base + (next_base - base) * t
+            # 加噪声
+            val *= _rng.gauss(1.0, 0.03)
+            bldg_total_minute.append(round(val, 1))
+            for comp, ratio in bldg_components.items():
+                bldg_detail_minute[comp].append(round(val * ratio * _rng.gauss(1.0, 0.05), 1))
+    bldg_total_minute = bldg_total_minute * n_days
+    for comp in bldg_components:
+        bldg_detail_minute[comp] = bldg_detail_minute[comp] * n_days
+
+    # ---- 分钟级充电负荷仿真 (集成充电站实景) ----
+    # 使用与 charging-station-live 相同的模型, 但扩展至全天+多日
+    arrival_rates = HOURLY_ARRIVAL_RATE
+    rates = arrival_rates.get(day_type, arrival_rates['workday'])
+    month_factor = MONTHLY_ARRIVAL_MULTIPLIER.get(actual_month, 1.0)
+
+    n_120kw = 16; n_480kw = 2; total_piles = n_120kw + n_480kw
+    pile_types = (
+        [{'type': '120kW', 'power': 120, 'id': f'CP-{i+1:02d}', 'x': i} for i in range(n_120kw)]
+        + [{'type': '480kW', 'power': 480, 'id': f'HP-{i+1:02d}', 'x': n_120kw + i} for i in range(n_480kw)]
+    )
+    car_types = [
+        {'name': '微型', 'battery': 25, 'color': '#60d040', 'pct': 0.08},
+        {'name': '小型', 'battery': 35, 'color': '#40c0f0', 'pct': 0.12},
+        {'name': '紧凑型', 'battery': 50, 'color': '#f0a020', 'pct': 0.25},
+        {'name': '中型', 'battery': 65, 'color': '#e8e8f0', 'pct': 0.25},
+        {'name': 'SUV', 'battery': 85, 'color': '#f08030', 'pct': 0.18},
+        {'name': '豪华', 'battery': 100, 'color': '#c090d0', 'pct': 0.07},
+        {'name': '物流', 'battery': 80, 'color': '#8090a0', 'pct': 0.05},
+    ]
+
+    total_minutes = 1440 * n_days
+    ev_total_kw_minute = []
+    ev_active_count_minute = []
+    ev_waiting_count_minute = []
+    ev_pile_snapshots = []  # 每5分钟一个桩快照
+
+    active_sessions = []
+    waiting_queue = []
+    next_car_id = 1
+
+    for minute in range(total_minutes):
+        hour_of_day = (minute % 1440) // 60
+        base_rate = rates[min(hour_of_day, 23)]
+        # 夜间修正: 00:00-06:00 到达率很低
+        if hour_of_day < 6:
+            base_rate = max(0, base_rate * 0.3)
+        effective_rate = base_rate * month_factor
+
+        # 天气对充电行为的影响
+        weather_charge_factor = WEATHER_CHARGING_COEFF.get(actual_weather, 1.0)
+        effective_rate *= weather_charge_factor
+
+        # 车辆到达
+        arrival_prob = effective_rate / 60.0
+        n_arrivals = 0
+        if _rng.random() < arrival_prob * 0.7:
+            n_arrivals = 1
+        if effective_rate > 12 and _rng.random() < arrival_prob * 0.3:
+            n_arrivals = 2
+
+        for _ in range(n_arrivals):
+            r = _rng.random(); cum = 0
+            car_type = car_types[0]
+            for ct in car_types:
+                cum += ct['pct']
+                if r <= cum: car_type = ct; break
+
+            start_soc = max(0.05, _rng.gauss(0.21, 0.08))
+            target_soc = min(0.95, _rng.gauss(0.85, 0.06))
+            needed_kwh = car_type['battery'] * (target_soc - start_soc)
+            needed_kwh = max(5, needed_kwh)
+
+            car = {
+                'id': next_car_id, 'type': car_type['name'],
+                'battery_kwh': car_type['battery'], 'color': car_type['color'],
+                'start_soc': round(start_soc, 2), 'target_soc': round(target_soc, 2),
+                'needed_kwh': round(needed_kwh, 1), 'arrive_min': minute,
+            }
+            next_car_id += 1
+
+            used_piles = {s['pile_idx'] for s in active_sessions}
+            free_120 = [i for i in range(n_120kw) if i not in used_piles]
+            free_480 = [i for i in range(n_120kw, total_piles) if i not in used_piles]
+
+            if free_120:
+                pile_idx = _rng.choice(free_120)
+            elif free_480:
+                pile_idx = _rng.choice(free_480)
+            else:
+                waiting_queue.append(car)
+                continue
+
+            charge_power = min(pile_types[pile_idx]['power'], car_type['battery'] * 1.5)
+            duration_min = needed_kwh / charge_power * 60
+            active_sessions.append({
+                'pile_idx': pile_idx, 'car': car,
+                'charge_power': round(charge_power, 1), 'start_min': minute,
+                'est_duration': round(duration_min, 0),
+                'status': 'charging', 'depart_min': None,
+            })
+
+        # 更新充电进度
+        active_now = []
+        for s in active_sessions:
+            elapsed = minute - s['start_min']
+            if s['status'] == 'charging':
+                progress = min(1.0, elapsed / max(s['est_duration'], 1))
+                s['car']['current_soc'] = round(s['car']['start_soc'] + (s['car']['target_soc'] - s['car']['start_soc']) * progress, 2)
+                s['car']['remaining_min'] = max(0, round(s['est_duration'] - elapsed, 0))
+                if progress >= 1.0:
+                    s['status'] = 'completed'
+                    s['depart_min'] = minute + _rng.randint(2, 6)
+                    s['car']['current_soc'] = s['car']['target_soc']
+                    s['car']['remaining_min'] = 0
+                    active_now.append(s)
+                else:
+                    active_now.append(s)
+            elif s['status'] == 'completed':
+                if minute >= s['depart_min']:
+                    pass  # 离开, 不加入
+                else:
+                    active_now.append(s)
+
+        # 释放桩位给等待队列
+        used_now = {s['pile_idx'] for s in active_now}
+        free_now = [i for i in range(total_piles) if i not in used_now]
+        while waiting_queue and free_now:
+            car = waiting_queue.pop(0)
+            pile_idx = _rng.choice(free_now)
+            free_now.remove(pile_idx)
+            charge_power = min(pile_types[pile_idx]['power'], car['battery_kwh'] * 1.5)
+            duration_min = car['needed_kwh'] / charge_power * 60
+            active_now.append({
+                'pile_idx': pile_idx, 'car': car,
+                'charge_power': round(charge_power, 1), 'start_min': minute,
+                'est_duration': round(duration_min, 0), 'status': 'charging',
+                'depart_min': None,
+            })
+            used_now.add(pile_idx)
+
+        active_sessions = active_now
+        total_power = sum(s['charge_power'] for s in active_sessions)
+        ev_total_kw_minute.append(round(total_power, 1))
+        ev_active_count_minute.append(len(active_sessions))
+        ev_waiting_count_minute.append(len(waiting_queue))
+
+        # 每5分钟保存桩级快照
+        if minute % 5 == 0:
+            snap = []
+            for s in active_sessions:
+                snap.append({
+                    'pile_idx': s['pile_idx'], 'pile_id': pile_types[s['pile_idx']]['id'],
+                    'car_id': s['car']['id'], 'car_type': s['car']['type'],
+                    'car_color': s['car']['color'],
+                    'soc': s['car'].get('current_soc', s['car']['start_soc']),
+                    'charge_power': s['charge_power'], 'status': s.get('status', 'charging'),
+                })
+            ev_pile_snapshots.append({'minute': minute, 'piles': snap})
+
+    # ---- 分钟级储能仿真 ----
+    ess_cap = _sim_cache.get('ess_cap', 2000) if _sim_cache else 2000
+    ess_pow = _sim_cache.get('ess_pow', 1000) if _sim_cache else 1000
+    tou_seq = _sim_cache.get('tou_seq', []) if _sim_cache else []
+
+    soc = 0.5  # 起始SOC 50%
+    ess_charge_minute = []
+    ess_discharge_minute = []
+    soc_minute = []
+
+    for m in range(total_minutes):
+        day_min = m % 1440
+        hour = day_min // 60
+        pv = pv_kw_minute[m]
+        load = bldg_total_minute[day_min] + ev_total_kw_minute[m] + STATION_AUX_DAILY_KWH / 24
+
+        # 获取当前TOU电价
+        if len(tou_seq) > 0:
+            tou = tou_seq[(min(day + m // 1440, 364)) * 24 + hour]
+        else:
+            tou = 0.85  # default flat
+
+        net = pv - load
+        ess_action = 0  # +charge, -discharge
+        if net > 10 and soc < 0.90 and tou < 1.0:
+            # 谷时/平时充电
+            chg = min(net * 0.7, ess_pow, (0.90 - soc) * ess_cap)  # kW → kWh in 1 min
+            chg_kwh = chg / 60.0
+            soc += chg_kwh / ess_cap
+            ess_action = chg
+        elif net < -10 and soc > 0.15:
+            # 放电
+            disch = min(-net * 0.7, ess_pow, (soc - 0.15) * ess_cap * 60)
+            disch_kwh = disch / 60.0
+            soc -= disch_kwh / ess_cap
+            ess_action = -disch
+        elif soc < 0.30 and tou < 0.5:
+            # 谷电补充
+            chg = min(ess_pow * 0.5, (0.30 - soc) * ess_cap * 60)
+            chg_kwh = chg / 60.0
+            soc += chg_kwh / ess_cap
+            ess_action = chg
+
+        soc = max(0.10, min(0.95, soc))
+        if ess_action > 0:
+            ess_charge_minute.append(round(ess_action, 1))
+            ess_discharge_minute.append(0)
+        elif ess_action < 0:
+            ess_charge_minute.append(0)
+            ess_discharge_minute.append(round(-ess_action, 1))
+        else:
+            ess_charge_minute.append(0)
+            ess_discharge_minute.append(0)
+        soc_minute.append(round(soc, 4))
+
+    # ---- 电网交互 ----
+    grid_import_min = []
+    grid_export_min = []
+    for m in range(total_minutes):
+        day_min = m % 1440
+        pv = pv_kw_minute[m]
+        load = bldg_total_minute[day_min] + ev_total_kw_minute[m] + STATION_AUX_DAILY_KWH / 24
+        net = pv + ess_discharge_minute[m] - load - ess_charge_minute[m]
+        if net > 0:
+            grid_import_min.append(0)
+            grid_export_min.append(round(net, 1))
+        else:
+            grid_import_min.append(round(-net, 1))
+            grid_export_min.append(0)
+
+    # ---- 构建响应 ----
+    # 采样为5分钟间隔用于传输 (但保留关键分钟数据)
+    sample_interval = 5  # 每5分钟采样以减少传输量
+    sampled_minutes = []
+    for m in range(0, total_minutes, sample_interval):
+        day_idx = m // 1440
+        minute_of_day = m % 1440
+        hour = minute_of_day // 60
+        min_in_hour = minute_of_day % 60
+
+        # 聚合本采样间隔的数据
+        end_m = min(m + sample_interval, total_minutes)
+        pv_avg = np.mean(pv_kw_minute[m:end_m])
+        load_total_avg = np.mean([bldg_total_minute[mi % 1440] + ev_total_kw_minute[mi] for mi in range(m, end_m)])
+        bldg_avg = np.mean([bldg_total_minute[mi % 1440] for mi in range(m, end_m)])
+        ev_avg = np.mean([ev_total_kw_minute[mi] for mi in range(m, end_m)])
+        ess_ch_avg = np.mean(ess_charge_minute[m:end_m])
+        ess_disch_avg = np.mean(ess_discharge_minute[m:end_m])
+        grid_imp_avg = np.mean(grid_import_min[m:end_m])
+        grid_exp_avg = np.mean(grid_export_min[m:end_m])
+
+        # 建筑分项
+        bldg_comp_avg = {}
+        for comp in bldg_components:
+            bldg_comp_avg[comp] = round(np.mean([bldg_detail_minute[comp][mi % 1440] for mi in range(m, end_m)]), 1)
+
+        sampled_minutes.append({
+            'minute': m,
+            'day': day_idx,
+            'tod': f'{hour:02d}:{min_in_hour:02d}',
+            'pv_kw': round(pv_avg, 1),
+            'load_total_kw': round(load_total_avg, 1),
+            'bldg_total_kw': round(bldg_avg, 1),
+            'bldg_components': bldg_comp_avg,
+            'ev_total_kw': round(ev_avg, 1),
+            'ev_active': round(np.mean(ev_active_count_minute[m:end_m]), 1),
+            'ev_waiting': round(np.mean(ev_waiting_count_minute[m:end_m]), 1),
+            'ess_charge_kw': round(ess_ch_avg, 1),
+            'ess_discharge_kw': round(ess_disch_avg, 1),
+            'soc': round(soc_minute[end_m - 1], 4) if end_m > m else round(soc_minute[m], 4),
+            'grid_import_kw': round(grid_imp_avg, 1),
+            'grid_export_kw': round(grid_exp_avg, 1),
+            'cloud_cover': round(np.mean(cloud_cover[m:end_m]), 3),
+            'ghi': round(np.mean([ghi_minute[mi % 1440] for mi in range(m, end_m)]), 0),
+            'temp': round(np.mean([temp_minute[mi % 1440] for mi in range(m, end_m)]), 1),
+        })
+
+    # 日汇总
+    daily_summary = []
+    for d in range(n_days):
+        d_start = d * 1440
+        d_end = (d + 1) * 1440
+        pv_d = round(sum(pv_kw_minute[d_start:d_end]) / 60.0, 1)
+        load_d = round(sum(bldg_total_minute[0:1440]) / 60.0 + sum(ev_total_kw_minute[d_start:d_end]) / 60.0 + STATION_AUX_DAILY_KWH, 1)
+        grid_imp_d = round(sum(grid_import_min[d_start:d_end]) / 60.0, 1)
+        grid_exp_d = round(sum(grid_export_min[d_start:d_end]) / 60.0, 1)
+        ess_disch_d = round(sum(ess_discharge_minute[d_start:d_end]) / 60.0, 1)
+        daily_summary.append({
+            'day': day + d,
+            'month': cal.month_of_day[min(day + d, 364)],
+            'day_type': cal.day_types[min(day + d, 364)],
+            'weather': cal.weather_seq[min(day + d, 364)] if weather == 'auto' else actual_weather,
+            'pv_kwh': pv_d,
+            'load_kwh': load_d,
+            'grid_import_kwh': grid_imp_d,
+            'grid_export_kwh': grid_exp_d,
+            'ev_energy_kwh': round(sum(ev_total_kw_minute[d_start:d_end]) / 60.0, 1),
+            'ess_throughput_kwh': round(ess_disch_d, 1),
+            'ssr': round((pv_d - grid_exp_d) / max(load_d, 1), 4),
+        })
+
+    # 24h 整点快照 (用于快速预览)
+    hourly_snapshots = []
+    for d in range(n_days):
+        for h in range(24):
+            m_start = d * 1440 + h * 60
+            m_end = m_start + 60
+            idx_start = m_start // sample_interval
+            idx_end = m_end // sample_interval
+            snap_data = sampled_minutes[idx_start:idx_end]
+            if snap_data:
+                hourly_snapshots.append({
+                    'day': d,
+                    'hour': h,
+                    'pv_kw': round(np.mean([s['pv_kw'] for s in snap_data]), 1),
+                    'load_kw': round(np.mean([s['load_total_kw'] for s in snap_data]), 1),
+                    'ev_kw': round(np.mean([s['ev_total_kw'] for s in snap_data]), 1),
+                    'bldg_kw': round(np.mean([s['bldg_total_kw'] for s in snap_data]), 1),
+                    'soc': snap_data[-1]['soc'],
+                    'grid_import_kw': round(np.mean([s['grid_import_kw'] for s in snap_data]), 1),
+                    'grid_export_kw': round(np.mean([s['grid_export_kw'] for s in snap_data]), 1),
+                    'cloud': round(np.mean([s['cloud_cover'] for s in snap_data]), 2),
+                    'ghi': round(np.mean([s['ghi'] for s in snap_data]), 0),
+                })
+
+    # 每15分钟的桩级快照 (用于充电站可视化动画)
+    pile_timeline = []
+    for d in range(n_days):
+        for h in range(24):
+            for q in range(4):  # 每15分钟
+                m = d * 1440 + h * 60 + q * 15
+                snap_idx = m // 5
+                if snap_idx < len(ev_pile_snapshots):
+                    pile_timeline.append(ev_pile_snapshots[snap_idx])
+
+    return {
+        'config': {
+            'day_start': day, 'n_days': n_days,
+            'month': actual_month, 'season': season,
+            'weather': actual_weather, 'day_type': day_type,
+            'pv_cap_kwp': pv_cap, 'ess_cap_kwh': ess_cap, 'ess_pow_kw': ess_pow,
+            'total_piles': total_piles,
+            'sample_interval_min': sample_interval,
+        },
+        'weather_detail': {
+            'mode': actual_weather,
+            'cloud_cover_stats': {
+                'min': round(min(cloud_cover), 3),
+                'max': round(max(cloud_cover), 3),
+                'mean': round(np.mean(cloud_cover), 3),
+            },
+            'temp_range': {'min': min(temp_minute), 'max': max(temp_minute)},
+            'ghi_peak': max(ghi_minute[:1440]),
+        },
+        'pile_config': [{'id': p['id'], 'type': p['type'], 'x': p['x']} for p in pile_types],
+        'sampled_minutes': sampled_minutes,
+        'hourly_snapshots': hourly_snapshots,
+        'pile_timeline': pile_timeline[:min(len(pile_timeline), 672)],  # 最多7天*96
+        'daily_summary': daily_summary,
+        'totals': {
+            'pv_mwh': round(sum(pv_kw_minute) / 60000.0, 2),
+            'load_mwh': round((sum(bldg_total_minute[0:1440]) * n_days + sum(ev_total_kw_minute) + STATION_AUX_DAILY_KWH * n_days) / 60000.0, 2),
+            'grid_import_mwh': round(sum(grid_import_min) / 60000.0, 2),
+            'grid_export_mwh': round(sum(grid_export_min) / 60000.0, 2),
+            'ev_energy_mwh': round(sum(ev_total_kw_minute) / 60000.0, 2),
+            'ess_throughput_mwh': round(sum(ess_discharge_minute) / 60000.0, 2),
+        },
     }
 
 

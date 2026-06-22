@@ -118,7 +118,7 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
     <a data-tab="recommend"><span class="icon">💡</span>运营建议</a>
     <div class="cat">运行仿真</div>
     <a data-tab="dispatch"><span class="icon">🔌</span>8760h调度</a>
-    <a data-tab="scada"><span class="icon">🏭</span>SCADA监控</a>
+    <a data-tab="scada"><span class="icon">🏭</span>SCADA Pro</a>
     <a data-tab="live-station"><span class="icon">🚗</span>充电站实景</a>
   </nav>
   <div class="status"><span class="dot" id="apiDot"></span><span id="apiLabel">检查API...</span></div>
@@ -1499,258 +1499,580 @@ async function loadDispatchMonthlyChart() {
   }, 200);
 }
 
-// ==================== SCADA Monitor ====================
-let scadaDay = 200;
+// ==================== SCADA Pro — 细粒度仿真监控 ====================
+let scadaProData = null;
+let scadaProDay = 200;
+let scadaProWeather = 'auto';
+let scadaProNDays = 1;
+let scadaProMinute = 720;  // current minute of day (720 = 12:00)
+let scadaProTimer = null, scadaProPlaying = false;
 
-function renderSCADA() {
+async function renderSCADA() {
   const c = document.getElementById('content');
   c.innerHTML = `
-    <div class="scada-metrics" id="scadaMetrics" style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:12px;"></div>
-    <div class="row2-1">
-      <div class="chart-box" style="min-height:480px;">
-        <h3>微网单线图 — 实时能流监控</h3>
-        <div style="display:flex;align-items:center;gap:6px;margin:6px 0;flex-wrap:wrap;">
-          <span style="font-size:9px;color:#5a8aaa;">日期:</span>
-          <input type="range" id="scadaDaySlider" min="0" max="364" value="${scadaDay}" style="width:120px;accent-color:var(--accent2);"
-            oninput="scadaDay=parseInt(this.value); document.getElementById('scadaDayLabel').textContent=scadaDay; loadSCADAData();">
-          <span id="scadaDayLabel" style="color:var(--accent2);font-size:11px;font-weight:600;min-width:30px;">${scadaDay}</span>
-          <span style="font-size:9px;color:#5a8aaa;">时刻:</span>
-          <span style="font-size:10px;color:var(--accent);">00:00</span>
-          <input type="range" id="scadaHour" min="0" max="23" value="12" style="flex:1;min-width:80px;accent-color:var(--accent);"
-            oninput="updateSCADA(parseInt(this.value));">
-          <span style="font-size:10px;color:var(--accent);">23:00</span>
-          <span id="scadaTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:40px;">12:00</span>
-          <button id="scadaPlayBtn" onclick="toggleSCADAPlay()" style="background:var(--accent);border:none;color:#000;padding:5px 14px;border-radius:4px;cursor:pointer;font-weight:600;">▶ 播放</button>
-          <span style="font-size:10px;color:#5a8aaa;" id="scadaDayInfo"></span>
-        </div>
-        <div id="scadaSLD" style="height:400px;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;"></div>
-      </div>
-      <div>
-        <div class="chart-box"><h3>24h 功率曲线</h3><div class="chart-inner" id="scadaPowerChart"></div></div>
-        <div class="chart-box"><h3>SOC + 分时电价</h3><div class="chart-inner" id="scadaSOCChart"></div></div>
-        <div class="chart-box"><h3>日运行汇总</h3>
-          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;" id="scadaSummary"></div>
-        </div>
+    <div class="metrics-row" id="spMetrics" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr));"></div>
+    <!-- Controls -->
+    <div class="chart-box" style="margin-bottom:8px;padding:8px 12px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-size:10px;color:#5a8aaa;font-weight:600;">SCADA Pro</span>
+        <span style="font-size:9px;color:#5a8aaa;">日期:</span>
+        <input type="range" id="spDaySlider" min="0" max="364" value="${scadaProDay}" style="width:100px;accent-color:var(--accent2);"
+          oninput="scadaProDay=parseInt(this.value); document.getElementById('spDayLabel').textContent=scadaProDay; loadSCADAProData();">
+        <span id="spDayLabel" style="color:var(--accent2);font-size:10px;font-weight:600;min-width:24px;">${scadaProDay}</span>
+        <span style="font-size:9px;color:#5a8aaa;">天气:</span>
+        <select id="spWeather" onchange="scadaProWeather=this.value; loadSCADAProData();" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:2px 6px;border-radius:3px;font-size:10px;">
+          <option value="auto">自动</option><option value="clear">晴天</option><option value="partly_cloudy">晴转多云</option>
+          <option value="cloudy">多云</option><option value="overcast">阴天</option><option value="rain">雨天</option>
+        </select>
+        <span style="font-size:9px;color:#5a8aaa;">天数:</span>
+        <select id="spNDays" onchange="scadaProNDays=parseInt(this.value); loadSCADAProData();" style="background:var(--panel);color:var(--text);border:1px solid var(--border);padding:2px 6px;border-radius:3px;font-size:10px;">
+          <option value="1">1天</option><option value="2">2天</option><option value="3">3天</option>
+          <option value="5">5天</option><option value="7">7天</option>
+        </select>
+        <span style="font-size:9px;color:#5a8aaa;">时刻:</span>
+        <span style="font-size:9px;color:var(--bright);">00:00</span>
+        <input type="range" id="spMinute" min="0" max="1439" value="720" style="flex:1;min-width:60px;accent-color:var(--accent);"
+          oninput="scadaProMinute=parseInt(this.value); updateSCADAPro(scadaProMinute);">
+        <span style="font-size:9px;color:var(--bright);">23:59</span>
+        <span id="spTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:44px;">12:00</span>
+        <button id="spPlayBtn" onclick="toggleSCADAProPlay()" style="background:var(--accent);border:none;color:#000;padding:4px 14px;border-radius:4px;cursor:pointer;font-weight:600;font-size:10px;">▶ 播放</button>
+        <span style="font-size:9px;color:var(--accent2);margin-left:4px;" id="spInfo"></span>
       </div>
     </div>
+    <!-- Row 1: 2:1 SLD+Charging | SOC+Weather -->
+    <div class="row2-1" style="margin-bottom:12px;">
+      <div class="chart-box" style="min-height:500px;">
+        <h3>微网单线图 + 充电站实景</h3>
+        <div style="display:flex;height:440px;gap:8px;">
+          <div id="spSLD" style="flex:1;background:rgba(0,0,0,0.2);border-radius:6px;position:relative;overflow:hidden;min-width:200px;"></div>
+          <canvas id="spChargingCanvas" style="flex:1.2;border-radius:6px;min-width:250px;"></canvas>
+        </div>
+      </div>
+      <div>
+        <div class="chart-box"><h3>SOC + 电网功率</h3><div class="chart-inner" id="spSOCChart"></div></div>
+        <div class="chart-box"><h3>天气: GHI辐照度 + 云量 + 温度</h3><div class="chart-inner" id="spWeatherChart"></div></div>
+      </div>
+    </div>
+    <!-- Row 2: Minute-resolution power flow + Building breakdown -->
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>分钟级功率流 (PV/负荷/ESS/电网)</h3><div class="chart-inner tall" id="spPowerFlowChart"></div></div>
+      <div class="chart-box"><h3>建筑负荷分项 + EV充电 + 站用电</h3><div class="chart-inner tall" id="spLoadBreakChart"></div></div>
+    </div>
+    <!-- Row 3: Charging pile heatmap + ESS detail -->
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>充电桩利用率热力图 (每15分钟)</h3><div class="chart-inner short" id="spPileHeatmapChart"></div></div>
+      <div class="chart-box"><h3>ESS充放电循环 + 累计吞吐量</h3><div class="chart-inner short" id="spESSDetailChart"></div></div>
+    </div>
+    <!-- Row 4: Daily summary table -->
+    <div class="chart-box"><h3>逐日运行汇总</h3>
+      <div style="overflow-x:auto;"><table class="data-table" id="spDailyTable"></table></div>
+    </div>
   `;
-  document.getElementById('scadaSLD').innerHTML = '<div class="loading">加载SCADA数据中...</div>';
-  setTimeout(() => loadSCADAData(), 200);
+  document.getElementById('spSLD').innerHTML = '<div class="loading">加载细粒度仿真数据...</div>';
+  setTimeout(() => loadSCADAProData(), 200);
 }
 
-let scadaData = null, scadaTimer = null, scadaPlaying = false;
-
-async function loadSCADAData() {
-  scadaData = await fetchAPI(`/api/simulate/dispatch-day?day=${scadaDay}&pv_cap=1231&ess_cap=2000&ess_pow=1000`);
-  if (scadaData) updateSCADA(12);
+async function loadSCADAProData() {
+  const url = `/api/simulate/fine-grained-scada?day=${scadaProDay}&n_days=${scadaProNDays}&weather=${scadaProWeather}`;
+  scadaProData = await fetchAPI(url);
+  if (scadaProData) updateSCADAPro(scadaProMinute);
 }
 
-function scadaCard(value, unit, label, color, icon) {
-  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:8px 10px;display:flex;align-items:center;gap:8px;">
-    <span style="font-size:16px;">${icon||''}</span>
+function spCard(value, unit, label, color, icon) {
+  return `<div style="background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:6px 8px;display:flex;align-items:center;gap:6px;">
+    <span style="font-size:14px;">${icon||''}</span>
     <div style="flex:1;min-width:0;">
-      <div style="font-size:10px;color:#5a85a5;white-space:nowrap;">${label}</div>
-      <div style="font-size:18px;font-weight:700;color:${color||'var(--accent)'};line-height:1.3;">${value}</div>
-      <div style="font-size:8px;color:#4a7595;">${unit}</div>
+      <div style="font-size:9px;color:#5a85a5;white-space:nowrap;">${label}</div>
+      <div style="font-size:15px;font-weight:700;color:${color||'var(--accent)'};line-height:1.2;">${value}</div>
+      <div style="font-size:7px;color:#4a7595;">${unit}</div>
     </div>
   </div>`;
 }
 
-function updateSCADA(h) {
-  if (!scadaData) return;
-  const d = scadaData.hourly[h];
-  const s = scadaData.summary;
-  const di = scadaData.day_info;
+function updateSCADAPro(minuteOfDay) {
+  if (!scadaProData) return;
+  const data = scadaProData;
+  const cfg = data.config;
+  const totalMins = cfg.n_days * 1440;
 
-  document.getElementById('scadaTimeLabel').textContent = String(h).padStart(2,'0')+':00';
-  document.getElementById('scadaHour').value = h;
+  // Clamp minute to available range
+  const mIdx = Math.min(Math.floor(minuteOfDay / cfg.sample_interval_min), data.sampled_minutes.length - 1);
+  const snap = data.sampled_minutes[mIdx];
+  if (!snap) return;
 
+  // Find current day info
+  const dayIdx = Math.floor(minuteOfDay / 1440);
+  const ds = data.daily_summary[Math.min(dayIdx, data.daily_summary.length - 1)];
+
+  const todH = Math.floor((minuteOfDay % 1440) / 60);
+  const todM = (minuteOfDay % 1440) % 60;
+  document.getElementById('spTimeLabel').textContent = String(todH).padStart(2,'0')+':'+String(todM).padStart(2,'0');
+  document.getElementById('spMinute').value = minuteOfDay % 1440;
+
+  // Info line
   const weatherMap = {clear:'☀️晴',partly_cloudy:'⛅多云',cloudy:'☁️阴',overcast:'🌫️霾',rain:'🌧️雨'};
   const dtMap = {workday:'工作日',weekend:'双休日',holiday:'节假日',spring_festival:'春运'};
-  document.getElementById('scadaDayInfo').textContent =
-    `${di.month}月 | ${dtMap[di.day_type]||di.day_type} | ${weatherMap[di.weather]||di.weather} | ${di.season==='summer'?'☀️夏':di.season==='winter'?'❄️冬':di.season==='spring'?'🌸春':'🍂秋'}`;
+  document.getElementById('spInfo').textContent =
+    `${ds?ds.month:cfg.month}月 | ${dtMap[cfg.day_type]||cfg.day_type} | ${weatherMap[cfg.weather]||cfg.weather} | ${cfg.season==='summer'?'☀️夏':cfg.season==='winter'?'❄️冬':cfg.season==='spring'?'🌸春':'🍂秋'} | Day ${dayIdx+1}/${cfg.n_days}`;
 
-  // 8 top metrics
-  const importVal = d.grid_import > 0.5 ? '+' + d.grid_import.toFixed(0) : '';
-  const exportVal = d.grid_export > 0.5 ? '-' + d.grid_export.toFixed(0) : '';
-  const gridVal = importVal || exportVal || '0';
-  const gridColor = d.grid_import > 0.5 ? '#e04050' : d.grid_export > 0.5 ? '#30d0b0' : '#5a8aaa';
-  const essVal = d.ess_ch > 2 ? '充电 '+d.ess_ch.toFixed(0) : d.ess_disch > 2 ? '放电 '+d.ess_disch.toFixed(0) : '待机';
-  const essColor = d.ess_ch > 2 ? '#4090d0' : d.ess_disch > 2 ? '#60d040' : '#5a8aaa';
-  const pvUtil = d.pv > 2 ? (d.pv - Math.max(0, d.pv - d.load + d.ess_ch - d.ess_disch)) / Math.max(d.pv, 1) * 100 : 0;
-  const transLoad = (d.grid_import + d.grid_export) / 2500 * 100;
+  // Top metrics (6 cards)
+  const net = snap.pv_kw - snap.load_total_kw;
+  const essVal = snap.ess_charge_kw > 2 ? '充电' : snap.ess_discharge_kw > 2 ? '放电' : '待机';
+  const essColor = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : '#5a8aaa';
+  const essPower = snap.ess_charge_kw > 2 ? snap.ess_charge_kw : snap.ess_discharge_kw;
+  const gridFlow = snap.grid_import_kw > 1 ? '+' + snap.grid_import_kw.toFixed(0) : snap.grid_export_kw > 1 ? '-' + snap.grid_export_kw.toFixed(0) : '0';
+  const gridColor = snap.grid_import_kw > 1 ? '#e04050' : snap.grid_export_kw > 1 ? '#30d0b0' : '#5a8aaa';
+  const pvUtil = snap.pv_kw > 5 ? (snap.pv_kw - snap.grid_export_kw) / Math.max(snap.pv_kw, 1) * 100 : 0;
 
-  document.getElementById('scadaMetrics').innerHTML =
-    scadaCard(d.pv.toFixed(0)+' kW', '当前出力', '☀️ 光伏发电', '#f0a020', '☀️') +
-    scadaCard(d.load.toFixed(0)+' kW', '充电+建筑+站用电', '📊 总负荷', '#e8e8f0', '⚡') +
-    scadaCard((d.soc*100).toFixed(1)+'%', essVal, '🔋 储能 SOC', essColor, '🔋') +
-    scadaCard(d.ess_ch>2?d.ess_ch.toFixed(0)+' kW':d.ess_disch>2?d.ess_disch.toFixed(0)+' kW':'0 kW', '充/放电功率', '🔄 ESS功率', '#50b0f0', '↕️') +
-    scadaCard(d.net.toFixed(0)+' kW', d.net>0?'缺电':'余电', '📐 净负荷', d.net>0?'#e04050':'#60d040', '📏') +
-    scadaCard(gridVal+' kW', '网购+/上网-', '🔌 电网交互', gridColor, '🏭') +
-    scadaCard('¥'+d.tou.toFixed(3), (d.tou>1?'峰时':d.tou>0.6?'平时':'谷时'), '💰 分时电价', (d.tou>1?'#e04050':d.tou>0.6?'#f0a020':'#60d040'), '💵') +
-    scadaCard(pvUtil.toFixed(1)+'%', '瞬时消纳率', '📈 光伏消纳', pvUtil>80?'#60d040':pvUtil>50?'#f0a020':'#e04050', '📊');
+  document.getElementById('spMetrics').innerHTML =
+    spCard(snap.pv_kw.toFixed(0)+' kW', 'GHI:'+snap.ghi.toFixed(0)+' 云量:'+(snap.cloud_cover*100).toFixed(0)+'%', '☀️ 光伏', '#f0a020', '☀️') +
+    spCard(snap.load_total_kw.toFixed(0)+' kW', '建筑:'+snap.bldg_total_kw.toFixed(0)+' EV:'+snap.ev_total_kw.toFixed(0), '📊 总负荷', '#e8e8f0', '⚡') +
+    spCard((snap.soc*100).toFixed(1)+'%', essVal+' '+essPower.toFixed(0)+'kW', '🔋 储能 SOC', essColor, '🔋') +
+    spCard(gridFlow+' kW', '网购+/上网-', '🔌 电网交互', gridColor, '🏭') +
+    spCard((snap.ev_active).toFixed(0)+' 辆', '排队:'+snap.ev_waiting.toFixed(0)+' 总桩:'+cfg.total_piles, '🚗 充电桩占', '#f06878', '🚗') +
+    spCard(pvUtil.toFixed(1)+'%', net>0?'余电':'缺电', '📈 消纳率', pvUtil>80?'#60d040':pvUtil>50?'#f0a020':'#e04050', '📊');
 
-  // 12 summary cards (3x4)
-  const peakLoad = Math.max(...scadaData.hourly.map(x=>x.load));
-  const peakPV = Math.max(...scadaData.hourly.map(x=>x.pv));
-  const peakGrid = Math.max(...scadaData.hourly.map(x=>x.grid_import));
-  document.getElementById('scadaSummary').innerHTML =
-    scadaCard(s.total_pv.toFixed(0), 'kWh', '光伏发电量', '#f0a020', '☀️') +
-    scadaCard(s.total_load.toFixed(0), 'kWh', '总用电量', '#e8e8f0', '⚡') +
-    scadaCard(s.total_grid_import.toFixed(0), 'kWh', '网购电量', '#e04050', '🏭') +
-    scadaCard(s.total_grid_export.toFixed(0), 'kWh', '上网电量', '#30d0b0', '📤') +
-    scadaCard((s.self_sufficiency*100).toFixed(1)+'%', '新能源自洽', '自洽率', '#60d040', '🎯') +
-    scadaCard('¥'+s.grid_cost.toFixed(0), '元', '网购成本', '#f08030', '💵') +
-    scadaCard(s.carbon_reduction.toFixed(0), 'kg CO₂', '碳减排量', '#40e0a0', '🌿') +
-    scadaCard(s.ess_cycles.toFixed(2), '次', 'ESS等效循环', '#50b0f0', '🔄') +
-    scadaCard(peakLoad.toFixed(0), 'kW 峰值', '最大负荷', '#e04050', '⬆️') +
-    scadaCard(peakPV.toFixed(0), 'kW 峰值', '最大光伏出力', '#f0a020', '🔆') +
-    scadaCard(peakGrid.toFixed(0), 'kW 峰值', '最大网购功率', '#f08030', '⚡') +
-    scadaCard(transLoad.toFixed(1)+'%', '2500kVA', '变压器负载率', transLoad>90?'#e04050':transLoad>70?'#f0a020':'#60d040', '🔌');
-
-  drawSCADASLD(d);
-  drawSCADAPowerChart(h);
-  drawSCADASOCChart(h);
+  // Draw all visualizations
+  drawSP_SLD(snap, ds);
+  drawSP_ChargingCanvas(snap, data);
+  drawSP_SOCChart();
+  drawSP_WeatherChart();
+  drawSP_PowerFlowChart();
+  drawSP_LoadBreakChart();
+  drawSP_PileHeatmapChart();
+  drawSP_ESSDetailChart();
+  buildSPDailyTable();
 }
 
-function drawSCADASLD(d) {
-  const el = document.getElementById('scadaSLD');
+// ---------- SLD SVG ----------
+function drawSP_SLD(snap, ds) {
+  const el = document.getElementById('spSLD');
   if (!el) return;
-  const w = el.clientWidth, h = el.clientHeight;
-  // Compute panel centers
-  const pw = w/5 - 10;  // panel width
-  const cx1 = 20 + pw/2;        // PV center
-  const cx2 = w/5 + 30 + pw/2;  // ESS center
-  const cx3 = 2*w/5 + 40 + pw/2; // EV center
-  const cx4 = 3*w/5 + 50 + pw/2; // Building center
-  const isDay = parseInt(document.getElementById('scadaHour')?.value || 12) >= 6 && parseInt(document.getElementById('scadaHour')?.value || 12) < 19;
-  const socPct = d.soc * 100;
-  const pvAlpha = d.pv > 5 ? 1 : 0.3;
-  const gridImpAlpha = d.grid_import > 5 ? 1 : 0.2;
-  const gridExpAlpha = d.grid_export > 5 ? 1 : 0.2;
+  const w = el.clientWidth || 400, h = el.clientHeight || 440;
+  const socPct = snap.soc * 100;
+  const pvAlpha = snap.pv_kw > 5 ? 1 : 0.3;
+  const isDay = snap.ghi > 50;
+  const gridImp = snap.grid_import_kw > 2;
+  const gridExp = snap.grid_export_kw > 2;
+  const essCh = snap.ess_charge_kw > 2;
+  const essDisch = snap.ess_discharge_kw > 2;
+
   el.innerHTML = `
     <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background:${isDay?'#0a1628':'#050d18'};">
       <defs>
-        <filter id="g"><feGaussianBlur stdDeviation="1.5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <filter id="g2"><feGaussianBlur stdDeviation="1.5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        <linearGradient id="socGrad" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#e04050"/><stop offset="50%" stop-color="#f0a020"/><stop offset="100%" stop-color="#60d040"/>
+        </linearGradient>
       </defs>
       <!-- Grid -->
-      <rect x="${w/2-80}" y="8" width="160" height="22" rx="5" fill="#142840" stroke="#3080b0" stroke-width="1.5"/>
-      <text x="${w/2}" y="23" text-anchor="middle" fill="#d8ecf8" font-size="11" font-weight="600">大电网 10kV</text>
+      <rect x="${w/2-80}" y="8" width="160" height="20" rx="5" fill="#142840" stroke="#3080b0" stroke-width="1.2"/>
+      <text x="${w/2}" y="21" text-anchor="middle" fill="#d8ecf8" font-size="10" font-weight="600">大电网 10kV</text>
       <!-- Transformer -->
-      <rect x="${w/2-70}" y="40" width="140" height="30" rx="5" fill="#0f2038" stroke="#4080b0" stroke-width="1.5"/>
-      <text x="${w/2}" y="55" text-anchor="middle" fill="#c0ddf0" font-size="10" font-weight="600">箱变 2×1250kVA</text>
-      <text x="${w/2}" y="65" text-anchor="middle" fill="#6090b0" font-size="7">Dyn11 10/0.4kV</text>
+      <rect x="${w/2-60}" y="34" width="120" height="24" rx="4" fill="#0f2038" stroke="#4080b0" stroke-width="1.2"/>
+      <text x="${w/2}" y="47" text-anchor="middle" fill="#c0ddf0" font-size="9" font-weight="600">箱变 2×1250kVA</text>
+      <text x="${w/2}" y="55" text-anchor="middle" fill="#6090b0" font-size="6">Dyn11 10/0.4kV</text>
       <!-- Busbar -->
-      <rect x="10" y="78" width="${w-20}" height="14" rx="3" fill="#b0b0b0" stroke="#808080" stroke-width="1"/>
-      <text x="${w/2}" y="88" text-anchor="middle" fill="#0a1628" font-size="10" font-weight="700">400V 交流母线</text>
-      <!-- PV Panel -->
-      <rect x="20" y="110" width="${pw}" height="${h-130}" rx="6" fill="#0c1808" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
-      <text x="${cx1}" y="135" text-anchor="middle" fill="#f0b840" font-size="11" font-weight="600">☀ 光伏</text>
-      <text x="${cx1}" y="150" text-anchor="middle" fill="#80a060" font-size="9">${d.pv.toFixed(0)} kW</text>
-      <!-- ESS Panel -->
-      <rect x="${w/5+30}" y="110" width="${pw}" height="${h-130}" rx="6" fill="#081220" stroke="#4090d0" stroke-width="2"/>
-      <text x="${cx2}" y="135" text-anchor="middle" fill="#50b0f0" font-size="11" font-weight="600">🔋 储能</text>
-      <rect x="${w/5+35}" y="${h-50}" width="${w/5-20}" height="10" rx="5" fill="#0a1624" stroke="#3060a0" stroke-width="0.8"/>
-      <rect x="${w/5+35}" y="${h-50}" width="${(w/5-20)*socPct/100}" height="10" rx="5" fill="#40a050"/>
-      <text x="${cx2}" y="${h-42}" text-anchor="middle" fill="#a0d0a0" font-size="8">SOC ${socPct.toFixed(0)}%</text>
-      <!-- EV Panel -->
-      <rect x="${2*w/5+40}" y="110" width="${pw}" height="${h-130}" rx="6" fill="#100a0c" stroke="#e04050" stroke-width="2"/>
-      <text x="${cx3}" y="135" text-anchor="middle" fill="#f06878" font-size="11" font-weight="600">⚡ 充电</text>
-      <text x="${cx3}" y="150" text-anchor="middle" fill="#b06060" font-size="9">${d.load.toFixed(0)} kW</text>
-      <!-- Building Panel -->
-      <rect x="${3*w/5+50}" y="110" width="${pw}" height="${h-130}" rx="6" fill="#101218" stroke="#8090a0" stroke-width="2"/>
-      <text x="${cx4}" y="135" text-anchor="middle" fill="#b0c0d0" font-size="11" font-weight="600">🏠 建筑</text>
-      <text x="${cx4}" y="150" text-anchor="middle" fill="#708090" font-size="9">~${(d.load*0.35).toFixed(0)} kW</text>
-      <!-- Connections - grid to busbar -->
-      <line x1="${w/2}" y1="70" x2="${w/2}" y2="78" stroke="#a0b0c0" stroke-width="3" opacity="${gridImpAlpha||gridExpAlpha}"/>
-      <line x1="${w/2}" y1="30" x2="${w/2}" y2="40" stroke="#60a0c0" stroke-width="2.5"/>
-      <!-- Busbar to panels -->
-      <line x1="${cx1}" y1="92" x2="${cx1}" y2="110" stroke="#f0a020" stroke-width="2.5" opacity="${pvAlpha}"/>
-      <line x1="${cx2}" y1="92" x2="${cx2}" y2="110" stroke="#4090d0" stroke-width="2.5"/>
-      <line x1="${cx3}" y1="92" x2="${cx3}" y2="110" stroke="#e04050" stroke-width="2.5"/>
-      <line x1="${cx4}" y1="92" x2="${cx4}" y2="110" stroke="#8090a0" stroke-width="2.5"/>
-      <!-- Flow dots -->
-      ${d.pv>5?`<circle cx="${cx1}" cy="100" r="4" fill="#f0a020" filter="url(#g)"/>`:''}
-      ${d.ess_ch>2?`<circle cx="${cx2}" cy="100" r="4" fill="#4090d0" filter="url(#g)"/>`:''}
-      ${d.ess_disch>2?`<circle cx="${cx2}" cy="105" r="4" fill="#60d040" filter="url(#g)"/>`:''}
-      ${d.grid_import>5?`<circle cx="${w/2}" cy="74" r="4" fill="#e04050" filter="url(#g)"/>`:''}
-      ${d.grid_export>5?`<circle cx="${w/2}" cy="84" r="4" fill="#30d0b0" filter="url(#g)"/>`:''}
+      <rect x="8" y="64" width="${w-16}" height="12" rx="3" fill="#b0b0b0" stroke="#808080" stroke-width="1"/>
+      <text x="${w/2}" y="73" text-anchor="middle" fill="#0a1628" font-size="9" font-weight="700">400V AC母线</text>
+      <!-- PV -->
+      <rect x="10" y="90" width="${w/4-15}" height="100" rx="5" fill="#0c1808" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
+      <text x="${10+(w/4-15)/2}" y="115" text-anchor="middle" fill="#f0b840" font-size="10" font-weight="600">☀ 光伏</text>
+      <text x="${10+(w/4-15)/2}" y="130" text-anchor="middle" fill="#80a060" font-size="9">${snap.pv_kw.toFixed(0)}kW</text>
+      <text x="${10+(w/4-15)/2}" y="145" text-anchor="middle" fill="#608040" font-size="7">GHI:${snap.ghi.toFixed(0)}</text>
+      <text x="${10+(w/4-15)/2}" y="158" text-anchor="middle" fill="${snap.temp>30?'#e04050':snap.temp<10?'#4090d0':'#80a060'}" font-size="8">${snap.temp.toFixed(0)}°C</text>
+      <!-- ESS -->
+      <rect x="${w/4+12}" y="90" width="${w/4-15}" height="100" rx="5" fill="#081220" stroke="#4090d0" stroke-width="2"/>
+      <text x="${w/4+12+(w/4-15)/2}" y="115" text-anchor="middle" fill="#50b0f0" font-size="10" font-weight="600">🔋 储能</text>
+      <rect x="${w/4+18}" y="160" width="${w/4-27}" height="8" rx="4" fill="#0a1624" stroke="#3060a0" stroke-width="0.6"/>
+      <rect x="${w/4+18}" y="160" width="${(w/4-27)*socPct/100}" height="8" rx="4" fill="url(#socGrad)"/>
+      <text x="${w/4+12+(w/4-15)/2}" y="178" text-anchor="middle" fill="#a0d0a0" font-size="8">SOC ${socPct.toFixed(0)}%</text>
+      <!-- EV -->
+      <rect x="${2*w/4+14}" y="90" width="${w/4-15}" height="100" rx="5" fill="#100a0c" stroke="#e04050" stroke-width="2"/>
+      <text x="${2*w/4+14+(w/4-15)/2}" y="115" text-anchor="middle" fill="#f06878" font-size="10" font-weight="600">⚡ 充电</text>
+      <text x="${2*w/4+14+(w/4-15)/2}" y="130" text-anchor="middle" fill="#b06060" font-size="9">${snap.ev_total_kw.toFixed(0)}kW</text>
+      <text x="${2*w/4+14+(w/4-15)/2}" y="145" text-anchor="middle" fill="#906060" font-size="7">${snap.ev_active.toFixed(0)}/18 在用</text>
+      <!-- Building -->
+      <rect x="${3*w/4+16}" y="90" width="${w/4-20}" height="100" rx="5" fill="#101218" stroke="#8090a0" stroke-width="2"/>
+      <text x="${3*w/4+16+(w/4-20)/2}" y="115" text-anchor="middle" fill="#b0c0d0" font-size="10" font-weight="600">🏠 建筑</text>
+      <text x="${3*w/4+16+(w/4-20)/2}" y="130" text-anchor="middle" fill="#708090" font-size="9">${snap.bldg_total_kw.toFixed(0)}kW</text>
+      <text x="${3*w/4+16+(w/4-20)/2}" y="145" text-anchor="middle" fill="#607080" font-size="6">空调 ${(snap.bldg_components?.['空调']||0).toFixed(0)}kW</text>
+      <!-- Connections -->
+      <line x1="${w/2}" y1="58" x2="${w/2}" y2="64" stroke="#a0b0c0" stroke-width="2.5" opacity="${gridImp||gridExp?1:0.2}"/>
+      <line x1="${w/2}" y1="28" x2="${w/2}" y2="34" stroke="#60a0c0" stroke-width="2"/>
+      <line x1="${10+(w/4-15)/2}" y1="76" x2="${10+(w/4-15)/2}" y2="90" stroke="#f0a020" stroke-width="2" opacity="${pvAlpha}"/>
+      <line x1="${w/4+12+(w/4-15)/2}" y1="76" x2="${w/4+12+(w/4-15)/2}" y2="90" stroke="#4090d0" stroke-width="2"/>
+      <line x1="${2*w/4+14+(w/4-15)/2}" y1="76" x2="${2*w/4+14+(w/4-15)/2}" y2="90" stroke="#e04050" stroke-width="2"/>
+      <line x1="${3*w/4+16+(w/4-20)/2}" y1="76" x2="${3*w/4+16+(w/4-20)/2}" y2="90" stroke="#8090a0" stroke-width="2"/>
+      <!-- Flow indicators -->
+      ${snap.pv_kw>5?`<circle cx="${10+(w/4-15)/2}" cy="82" r="5" fill="#f0a020" filter="url(#g2)"/>`:''}
+      ${essCh?`<circle cx="${w/4+12+(w/4-15)/2}" cy="82" r="5" fill="#4090d0" filter="url(#g2)"/>`:''}
+      ${essDisch?`<circle cx="${w/4+12+(w/4-15)/2}" cy="86" r="5" fill="#60d040" filter="url(#g2)"/>`:''}
+      ${gridImp?`<circle cx="${w/2}" cy="61" r="5" fill="#e04050" filter="url(#g2)"/>`:''}
+      ${gridExp?`<circle cx="${w/2}" cy="69" r="5" fill="#30d0b0" filter="url(#g2)"/>`:''}
     </svg>
   `;
 }
 
-function drawSCADAPowerChart(h) {
-  if (!scadaData) return;
-  const c = initChart('scadaPowerChart');
-  if (!c) return;
-  const hours = Array.from({length:24},(_,i)=>i+':00');
-  const d = scadaData.hourly;
-  c.setOption({
-    backgroundColor:'transparent', tooltip:{trigger:'axis'},
-    legend:{ data:['光伏','负荷','网购电','上网电'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
-    grid:{ left:45, right:15, top:30, bottom:25 },
-    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
-    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} },
-    series:[
-      { name:'光伏', type:'line', data:d.map(x=>x.pv), lineStyle:{color:'#f0a020',width:2}, symbol:'none',
-        areaStyle:{color:'rgba(240,160,32,0.08)'} },
-      { name:'负荷', type:'line', data:d.map(x=>x.load), lineStyle:{color:'#e04050',width:2}, symbol:'none',
-        areaStyle:{color:'rgba(224,64,80,0.06)'} },
-      { name:'网购电', type:'line', data:d.map(x=>x.grid_import), lineStyle:{color:'#e04050',width:1.5,type:'dashed'}, symbol:'none' },
-      { name:'上网电', type:'line', data:d.map(x=>x.grid_export), lineStyle:{color:'#30d0b0',width:1.5}, symbol:'none' },
-    ],
-    graphic:[{type:'rect',left:`${45+(h/23)*(window.innerWidth*0.35-60)}`,top:30,width:2,height:'80%',shape:{fill:'#00c8f0'},z:100}]
-  }, true);
+// ---------- Charging Canvas ----------
+function drawSP_ChargingCanvas(snap, data) {
+  const canvas = document.getElementById('spChargingCanvas');
+  if (!canvas) return;
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  // Find nearest pile snapshot
+  const pileCfg = data.pile_config || [];
+  const pileSnaps = data.pile_timeline || [];
+  const mIdx = Math.floor(scadaProMinute / 15);
+  const ps = pileSnaps[Math.min(mIdx, pileSnaps.length - 1)];
+
+  // Occupancy
+  const occupiedSet = new Set((ps?.piles || []).map(p => p.pile_idx));
+
+  ctx.fillStyle = '#0a1a10'; ctx.fillRect(0, 0, w, h);
+
+  // Road
+  ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, h*0.82, w, h*0.18);
+  ctx.strokeStyle = '#f0c040'; ctx.setLineDash([24, 12]); ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(0, h*0.85); ctx.lineTo(w, h*0.85); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const nCols = 6;
+  const colW = w / (nCols + 1);
+  const rowOffsets = [h*0.13, h*0.38, h*0.62];
+
+  // Parking spots
+  pileCfg.forEach((pile, i) => {
+    const col = i % nCols, row = Math.floor(i / nCols);
+    const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
+    const spotW = colW * 0.78, spotH = h * 0.21;
+    const occupied = occupiedSet.has(i);
+
+    ctx.fillStyle = occupied ? 'rgba(240,160,32,0.12)' : 'rgba(255,255,255,0.02)';
+    ctx.strokeStyle = pile.type === '480kW' ? '#e04050' : '#4a8a4a';
+    ctx.lineWidth = pile.type === '480kW' ? 1.5 : 0.8;
+    ctx.fillRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
+    ctx.strokeRect(cx - spotW/2, cy - spotH/2, spotW, spotH);
+    ctx.fillStyle = pile.type === '480kW' ? '#e06070' : '#6aaa6a';
+    ctx.font = '7px "Microsoft YaHei"'; ctx.textAlign = 'center';
+    ctx.fillText(pile.id, cx, cy - spotH/2 - 3);
+    // Charger
+    ctx.fillStyle = occupied ? '#f0a020' : '#4a8a4a';
+    ctx.fillRect(cx - 3, cy - spotH/2 + 3, 6, 10);
+    ctx.fillStyle = '#000'; ctx.fillRect(cx - 1.5, cy - spotH/2 + 5, 3, 7);
+  });
+
+  // Draw cars
+  if (ps?.piles) {
+    ps.piles.forEach(car => {
+      const pileIdx = car.pile_idx;
+      const col = pileIdx % nCols, row = Math.floor(pileIdx / nCols);
+      const cx = colW * (col + 1), cy = rowOffsets[Math.min(row, 2)];
+      const spotW = colW * 0.78, spotH = h * 0.21;
+      const carW = spotW * 0.65, carH = spotH * 0.58;
+      const carX = cx - carW/2, carY = cy - carH/2;
+
+      // Shadow
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; ctx.fillRect(carX + 1.5, carY + 1.5, carW, carH);
+      // Body
+      const isCompleted = car.status === 'completed';
+      ctx.fillStyle = isCompleted ? '#80d080' : (car.car_color || '#60a0d0');
+      ctx.fillRect(carX, carY, carW, carH);
+      // Roof
+      ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.fillRect(carX + carW*0.15, carY, carW*0.7, carH*0.55);
+      // Windows
+      ctx.fillStyle = 'rgba(100,180,240,0.45)';
+      ctx.fillRect(carX + carW*0.2, carY + 1.5, carW*0.22, carH*0.45);
+      ctx.fillRect(carX + carW*0.55, carY + 1.5, carW*0.22, carH*0.45);
+
+      // Completed glow
+      if (isCompleted) {
+        ctx.shadowColor = '#40ff40'; ctx.shadowBlur = 6;
+        ctx.fillStyle = 'rgba(64,255,64,0.15)'; ctx.fillRect(carX - 1, carY - 1, carW + 2, carH + 2);
+        ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0;
+      }
+
+      // SOC bar
+      const barW = carW * 0.7, barH = 3;
+      const barX = carX + carW*0.15, barY = carY + carH + 2;
+      ctx.fillStyle = '#1a1a1a'; ctx.fillRect(barX, barY, barW, barH);
+      const soc = car.soc || 0;
+      if (isCompleted) {
+        ctx.fillStyle = '#40d040'; ctx.fillRect(barX, barY, barW, barH);
+        ctx.fillStyle = '#fff'; ctx.font = '6px "Microsoft YaHei"'; ctx.textAlign = 'center';
+        ctx.fillText('✓', cx, barY - 1);
+      } else {
+        const socGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+        socGrad.addColorStop(0, '#e04050'); socGrad.addColorStop(0.5, '#f0a020'); socGrad.addColorStop(1, '#60d040');
+        ctx.fillStyle = socGrad; ctx.fillRect(barX, barY, barW * Math.min(1, soc), barH);
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 6px "Microsoft YaHei"'; ctx.textAlign = 'center';
+        ctx.fillText((soc*100).toFixed(0)+'%', cx, barY - 1);
+      }
+    });
+  }
+
+  // Legend
+  ctx.fillStyle = '#60d040'; ctx.fillRect(8, 6, 8, 8);
+  ctx.fillStyle = '#8ab4d0'; ctx.font = '7px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('空闲', 19, 13);
+  ctx.fillStyle = '#f0a020'; ctx.fillRect(48, 6, 8, 8);
+  ctx.fillText('充电中', 59, 13);
+  ctx.fillStyle = '#40d040'; ctx.fillRect(88, 6, 8, 8);
+  ctx.fillText('已完成', 99, 13);
+
+  ctx.textAlign = 'right';
+  ctx.fillText(`在用:${snap.ev_active.toFixed(0)}辆 | 排队:${snap.ev_waiting.toFixed(0)} | 功率:${snap.ev_total_kw.toFixed(0)}kW`, w-8, 13);
 }
 
-function drawSCADASOCChart(h) {
-  if (!scadaData) return;
-  const c = initChart('scadaSOCChart');
+// ---------- SOC Chart ----------
+function drawSP_SOCChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spSOCChart');
   if (!c) return;
-  const hours = Array.from({length:24},(_,i)=>i+':00');
-  const d = scadaData.hourly;
+
+  const mins = data.sampled_minutes;
+  const labels = mins.map(m => {
+    const d = Math.floor(m.minute / 1440);
+    const tod = m.tod;
+    return (d > 0 ? `D${d+1} ` : '') + tod;
+  });
+  const socData = mins.map(m => m.soc * 100);
+  const gridImp = mins.map(m => m.grid_import_kw);
+  const gridExp = mins.map(m => -m.grid_export_kw);
+
+  // Show at most 1 day of labels for readability
+  const labelInterval = Math.max(1, Math.floor(mins.length / 48));
+
   c.setOption({
     backgroundColor:'transparent', tooltip:{trigger:'axis'},
-    legend:{ data:['SOC','TOU电价'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    legend:{ data:['SOC','网购电','上网电'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
     grid:{ left:45, right:50, top:30, bottom:25 },
-    xAxis:{ type:'category', data:hours, axisLabel:{color:'#5a8aaa',fontSize:9} },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#5a8aaa',fontSize:7,interval:labelInterval} },
     yAxis:[
-      { type:'value', name:'SOC %', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'}, min:0, max:100 },
-      { type:'value', name:'元/kWh', nameTextStyle:{color:'#5a8aaa'}, axisLabel:{color:'#5a8aaa'} }
+      { type:'value', name:'SOC %', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'}, min:0, max:100 },
+      { type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} }
     ],
     series:[
-      { name:'SOC', type:'line', data:d.map(x=>x.soc*100), lineStyle:{color:'#60d040',width:2.5},
-        areaStyle:{color:'rgba(96,208,64,0.1)'}, symbol:'circle', symbolSize:4 },
-      { name:'TOU电价', type:'line', yAxisIndex:1, data:d.map(x=>x.tou),
-        lineStyle:{color:'#c090d0',width:1.5,type:'dashed'}, symbol:'none' },
-      { name:'SOC范围', type:'line', data:Array(24).fill(10), lineStyle:{color:'#2a5a2a',width:1}, symbol:'none' },
-      { name:'SOC范围', type:'line', data:Array(24).fill(90), lineStyle:{color:'#2a5a2a',width:1}, symbol:'none' },
-    ],
-    graphic:[{type:'rect',left:`${45+(h/23)*(window.innerWidth*0.35-60)}`,top:30,width:2,height:'80%',shape:{fill:'#00c8f0'},z:100}]
+      { name:'SOC', type:'line', data:socData, lineStyle:{color:'#60d040',width:2.5},
+        areaStyle:{color:'rgba(96,208,64,0.12)'}, symbol:'none', smooth:true },
+      { name:'网购电', type:'bar', yAxisIndex:1, data:gridImp, barWidth:3,
+        itemStyle:{color:'rgba(224,64,80,0.4)'} },
+      { name:'上网电', type:'bar', yAxisIndex:1, data:gridExp, barWidth:3,
+        itemStyle:{color:'rgba(48,208,176,0.4)'} },
+    ]
   }, true);
 }
 
-function toggleSCADAPlay() {
-  scadaPlaying = !scadaPlaying;
-  const btn = document.getElementById('scadaPlayBtn');
-  if (scadaPlaying) {
+// ---------- Weather Chart ----------
+function drawSP_WeatherChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spWeatherChart');
+  if (!c) return;
+
+  const mins = data.sampled_minutes;
+  const labels = mins.map(m => m.tod);
+  const labelInterval = Math.max(1, Math.floor(mins.length / 24));
+
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['GHI辐射','云量','温度'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:50, top:30, bottom:25 },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#5a8aaa',fontSize:7,interval:labelInterval} },
+    yAxis:[
+      { type:'value', name:'W/m² / %', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} },
+      { type:'value', name:'°C', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} }
+    ],
+    series:[
+      { name:'GHI辐射', type:'line', data:mins.map(m=>m.ghi), lineStyle:{color:'#f0a020',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(240,160,32,0.10)'} },
+      { name:'云量', type:'line', data:mins.map(m=>m.cloud_cover*100), lineStyle:{color:'#8090a0',width:1.5,type:'dashed'}, symbol:'none' },
+      { name:'温度', type:'line', yAxisIndex:1, data:mins.map(m=>m.temp), lineStyle:{color:'#e04050',width:2}, symbol:'none',
+        areaStyle:{color:'rgba(224,64,80,0.06)'} },
+    ]
+  }, true);
+}
+
+// ---------- Minute Power Flow ----------
+function drawSP_PowerFlowChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spPowerFlowChart');
+  if (!c) return;
+
+  const mins = data.sampled_minutes;
+  const labels = mins.map(m => {
+    const d = Math.floor(m.minute / 1440);
+    return (d > 0 ? `D${d+1} ` : '') + m.tod;
+  });
+  const labelInterval = Math.max(1, Math.floor(mins.length / 48));
+
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['光伏','总负荷','ESS充电','ESS放电','网购电','上网电'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:30 },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#5a8aaa',fontSize:7,interval:labelInterval} },
+    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      { name:'光伏', type:'line', data:mins.map(m=>m.pv_kw), lineStyle:{color:'#f0a020',width:1.8}, symbol:'none',
+        areaStyle:{color:'rgba(240,160,32,0.15)'} },
+      { name:'总负荷', type:'line', data:mins.map(m=>m.load_total_kw), lineStyle:{color:'#e04050',width:1.8}, symbol:'none',
+        areaStyle:{color:'rgba(224,64,80,0.08)'} },
+      { name:'ESS充电', type:'bar', data:mins.map(m=>-m.ess_charge_kw), stack:'ess', barWidth:3,
+        itemStyle:{color:'rgba(64,144,208,0.5)'} },
+      { name:'ESS放电', type:'bar', data:mins.map(m=>m.ess_discharge_kw), stack:'ess', barWidth:3,
+        itemStyle:{color:'rgba(96,208,64,0.5)'} },
+      { name:'网购电', type:'bar', data:mins.map(m=>m.grid_import_kw), stack:'grid', barWidth:3,
+        itemStyle:{color:'rgba(224,64,80,0.4)'} },
+      { name:'上网电', type:'bar', data:mins.map(m=>-m.grid_export_kw), stack:'grid', barWidth:3,
+        itemStyle:{color:'rgba(48,208,176,0.4)'} },
+    ]
+  }, true);
+}
+
+// ---------- Load Breakdown ----------
+function drawSP_LoadBreakChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spLoadBreakChart');
+  if (!c) return;
+
+  const mins = data.sampled_minutes;
+  const labels = mins.map(m => m.tod);
+  const labelInterval = Math.max(1, Math.floor(mins.length / 24));
+  const comps = ['空调','餐饮','照明','热水','办公','动力'];
+  const colors = ['#e04050','#f0a020','#f0c840','#4090d0','#60a0d0','#8090a0'];
+
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:[...comps,'EV充电','站用电'], textStyle:{color:'#8ab4d0',fontSize:8}, top:0 },
+    grid:{ left:45, right:15, top:30, bottom:25 },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#5a8aaa',fontSize:7,interval:labelInterval} },
+    yAxis:{ type:'value', name:'kW', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} },
+    series:[
+      ...comps.map((comp, i) => ({
+        name:comp, type:'line', data:mins.map(m=>(m.bldg_components||{})[comp]||0),
+        lineStyle:{color:colors[i],width:1}, symbol:'none', stack:'bldg',
+        areaStyle:{color:'rgba('+{0:'224,64,80',1:'240,160,32',2:'240,200,64',3:'64,144,208',4:'96,160,208',5:'128,144,160'}[i]+',0.3)'}
+      })),
+      { name:'EV充电', type:'line', data:mins.map(m=>m.ev_total_kw),
+        lineStyle:{color:'#f06878',width:2}, symbol:'none' },
+      { name:'站用电', type:'line', data:mins.map(()=>5),
+        lineStyle:{color:'#c090d0',width:1,type:'dotted'}, symbol:'none' },
+    ]
+  }, true);
+}
+
+// ---------- Pile Heatmap ----------
+function drawSP_PileHeatmapChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spPileHeatmapChart');
+  if (!c) return;
+
+  const pts = data.pile_timeline || [];
+  const heatData = [];
+  pts.forEach(t => {
+    t.piles?.forEach(p => {
+      heatData.push([Math.floor(t.minute / 60), p.pile_idx, p.status === 'completed' ? 0.5 : 1]);
+    });
+  });
+
+  const maxMin = pts.length > 0 ? Math.floor(pts[pts.length-1].minute / 60) + 1 : 24;
+
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{formatter:p=>`${p.data[0]}h | ${data.pile_config?.[p.data[1]]?.id||p.data[1]} | ${p.data[2]===1?'充电中':'已完成'}`},
+    grid:{ left:60, right:15, top:10, bottom:20 },
+    xAxis:{ type:'value', name:'时间(h)', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa',fontSize:8}, max:maxMin },
+    yAxis:{ type:'category', data:(data.pile_config||[]).map(p=>p.id), axisLabel:{color:'#8ab4d0',fontSize:7}, name:'终端', nameTextStyle:{color:'#8ab4d0',fontSize:9} },
+    visualMap:{ show:false, min:0, max:1, inRange:{color:['#0a3040','#f0a020']} },
+    series:[{ type:'heatmap', data:heatData }]
+  });
+}
+
+// ---------- ESS Detail ----------
+function drawSP_ESSDetailChart() {
+  const data = scadaProData;
+  if (!data) return;
+  const c = initChart('spESSDetailChart');
+  if (!c) return;
+
+  const mins = data.sampled_minutes;
+  const labels = mins.map(m => m.tod);
+  const labelInterval = Math.max(1, Math.floor(mins.length / 24));
+
+  // Cumulative throughput
+  let cumThroughput = 0;
+  const cumData = mins.map(m => {
+    cumThroughput += m.ess_discharge_kw * data.config.sample_interval_min / 60;
+    return cumThroughput;
+  });
+
+  c.setOption({
+    backgroundColor:'transparent', tooltip:{trigger:'axis'},
+    legend:{ data:['ESS充电','ESS放电','累计吞吐量','SOC'], textStyle:{color:'#8ab4d0',fontSize:9}, top:0 },
+    grid:{ left:45, right:50, top:30, bottom:25 },
+    xAxis:{ type:'category', data:labels, axisLabel:{color:'#5a8aaa',fontSize:7,interval:labelInterval} },
+    yAxis:[
+      { type:'value', name:'kW / kWh', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'} },
+      { type:'value', name:'SOC %', nameTextStyle:{color:'#5a8aaa',fontSize:9}, axisLabel:{color:'#5a8aaa'}, min:0, max:100 }
+    ],
+    series:[
+      { name:'ESS充电', type:'bar', data:mins.map(m=>-m.ess_charge_kw), barWidth:3,
+        itemStyle:{color:'rgba(64,144,208,0.6)'} },
+      { name:'ESS放电', type:'bar', data:mins.map(m=>m.ess_discharge_kw), barWidth:3,
+        itemStyle:{color:'rgba(96,208,64,0.6)'} },
+      { name:'累计吞吐量', type:'line', data:cumData, lineStyle:{color:'#f0a020',width:2}, symbol:'none', smooth:true },
+      { name:'SOC', type:'line', yAxisIndex:1, data:mins.map(m=>m.soc*100),
+        lineStyle:{color:'#60d040',width:2}, symbol:'none' },
+    ]
+  }, true);
+}
+
+// ---------- Daily Summary Table ----------
+function buildSPDailyTable() {
+  const data = scadaProData;
+  if (!data) return;
+  const tbl = document.getElementById('spDailyTable');
+  if (!tbl) return;
+
+  let html = `<tr><th>日</th><th>月</th><th>天气</th><th>日类型</th><th>光伏(kWh)</th><th>负荷(kWh)</th><th>网购(kWh)</th><th>上网(kWh)</th><th>EV充电(kWh)</th><th>ESS吞吐(kWh)</th><th>自洽率</th></tr>`;
+  data.daily_summary.forEach(ds => {
+    const weatherMap = {clear:'☀️晴',partly_cloudy:'⛅多云',cloudy:'☁️阴',overcast:'🌫️霾',rain:'🌧️雨'};
+    const dtMap = {workday:'工作日',weekend:'双休日',holiday:'节假日',spring_festival:'春运'};
+    const ssrColor = ds.ssr > 0.4 ? '#60d040' : ds.ssr > 0.25 ? '#f0a020' : '#e04050';
+    html += `<tr>
+      <td>${ds.day}</td><td>${ds.month}月</td><td>${weatherMap[ds.weather]||ds.weather}</td><td>${dtMap[ds.day_type]||ds.day_type}</td>
+      <td class="num">${ds.pv_kwh.toFixed(0)}</td><td class="num">${ds.load_kwh.toFixed(0)}</td>
+      <td class="num">${ds.grid_import_kwh.toFixed(0)}</td><td class="num">${ds.grid_export_kwh.toFixed(0)}</td>
+      <td class="num">${ds.ev_energy_kwh.toFixed(0)}</td><td class="num">${ds.ess_throughput_kwh.toFixed(0)}</td>
+      <td class="num" style="color:${ssrColor};font-weight:600;">${(ds.ssr*100).toFixed(1)}%</td>
+    </tr>`;
+  });
+  tbl.innerHTML = html;
+}
+
+// ---------- Play Animation ----------
+function toggleSCADAProPlay() {
+  scadaProPlaying = !scadaProPlaying;
+  const btn = document.getElementById('spPlayBtn');
+  if (scadaProPlaying) {
     btn.textContent = '⏸ 停止';
     btn.style.background = '#e04050';
-    scadaTimer = setInterval(async () => {
-      let h = parseInt(document.getElementById('scadaHour')?.value || 0);
-      h = (h + 1) % 24;
-      if (h === 0) {
-        scadaDay = (scadaDay + 1) % 365;
-        document.getElementById('scadaDaySlider').value = scadaDay;
-        document.getElementById('scadaDayLabel').textContent = scadaDay;
-        await loadSCADAData();
-      }
-      updateSCADA(h);
-    }, 1500);
+    scadaProTimer = setInterval(() => {
+      let m = parseInt(document.getElementById('spMinute')?.value || 0);
+      m += 5;  // jump 5 minutes per tick
+      if (m >= 1440) m = 0;
+      scadaProMinute = m;
+      updateSCADAPro(m);
+    }, 400);
   } else {
     btn.textContent = '▶ 播放';
     btn.style.background = 'var(--accent)';
-    if (scadaTimer) clearInterval(scadaTimer);
+    if (scadaProTimer) clearInterval(scadaProTimer);
   }
 }
 
@@ -2472,6 +2794,7 @@ const renderers = {
 
 function renderTab(tab) {
   disposeCharts();
+  if (scadaProTimer) { clearInterval(scadaProTimer); scadaProPlaying = false; }
   if (scadaTimer) { clearInterval(scadaTimer); scadaPlaying = false; }
   if (liveAnimActive) { liveAnimActive = false;
     const btn = document.getElementById('lsAnimBtn');
