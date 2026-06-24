@@ -30,6 +30,8 @@ from config import (
     get_rte,  # v6.3: SOC/C-rate依赖RTE
     # v6.5: 电池退化与温度/DOD关系
     get_battery_yearly_degradation, get_calendar_fade_rate, get_cycle_life_at_dod,
+    get_ess_temp_derate,  # v6.7: ESS温度衰减
+    TMY_GHI_CLEAR,  # v6.6: PVGIS TMY数据引用
 )
 
 # 日类型年权重 (来源于文件12)
@@ -42,6 +44,17 @@ ANNUAL_DAYS_TOTAL = sum(DAY_TYPE_ANNUAL.values())  # 365
 BUILDING_DAY_TYPE_COEFF = {
     'workday': 1.00, 'weekend': 1.15, 'holiday': 1.30, 'spring_festival': 1.50,
 }
+
+
+def _day_to_month(day):
+    """日序号(0-364) → 月份(1-12)"""
+    days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    cumsum = 0
+    for i, d in enumerate(days_in_month):
+        cumsum += d
+        if day < cumsum:
+            return i + 1
+    return 12
 
 
 class MicrogridOptimizer:
@@ -61,11 +74,19 @@ class MicrogridOptimizer:
     """
 
     def __init__(self, size='medium', mc_scenarios=None, seed=None, calendar_ctx=None,
-                 use_abm=False, use_econ_model=False, abm_seed=42):
+                 use_abm=False, use_econ_model=False, abm_seed=42, tmy_data=None):
         self.size = size
         self.area_config = SERVICE_AREA_CONFIG[size]
         self.rng = np.random.RandomState(seed)
         self.calendar_ctx = calendar_ctx
+
+        # v6.6: PVGIS真实TMY数据 (优先), 格式 {TMY_GHI_CLEAR: {month: [24]}, ...}
+        if tmy_data is not None:
+            self._ghi_clear = tmy_data.get('TMY_GHI_CLEAR', TMY_GHI_CLEAR)
+            self._source = tmy_data.get('source', 'external')
+        else:
+            self._ghi_clear = TMY_GHI_CLEAR
+            self._source = 'config_hardcoded'
 
         if mc_scenarios is None:
             raise ValueError("需要传入MC仿真结果 mc_scenarios")
@@ -82,6 +103,7 @@ class MicrogridOptimizer:
 
         self.building_load = {}
         self.use_abm = use_abm
+        self._abm_building_cache = {}  # v6.7: 预计算ABM负荷缓存
         if use_abm:
             from building_load_abm import BuildingLoadABM
             self._abm = BuildingLoadABM(area_size=size, seed=abm_seed)
@@ -121,30 +143,41 @@ class MicrogridOptimizer:
     def _build_8760h_sequence(self):
         """构建全年8760h逐时PV系数和负荷序列 (用于终验)
 
-        使用CalendarContext提供的真实日历日类型和Markov天气序列.
-        若calendar_ctx为None, 回退到旧版随机分配模式.
+        v6.7: PVGIS 8760h实测GHI替代 Markov合成天气 + PV_COEFF.
+        若CalendarContext含hourly_ghi则直接使用实测值,
+        否则回退到旧版天气序列+PV_COEFF.
         """
         days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 
-        # --- 天气序列 ---
-        if self.calendar_ctx is not None:
+        # --- v6.7: 优先PVGIS 8760h实测GHI ---
+        use_pvgis = (self.calendar_ctx is not None
+                     and getattr(self.calendar_ctx, '_has_pvgis', False))
+
+        if use_pvgis:
+            hourly_ghi = self.calendar_ctx.hourly_ghi
+            hourly_temp = self.calendar_ctx.hourly_temp
             day_weather = self.calendar_ctx.weather_seq
         else:
-            # 旧版: 独立随机shuffle
-            day_weather = []
-            for month in range(1, 13):
-                wdays = MONTHLY_WEATHER_DAYS[month]
-                types = []
-                for w, c in wdays.items():
-                    types.extend([w] * c)
-                remaining = days_in_month[month-1] - len(types)
-                if remaining > 0:
-                    total = sum(wdays.values())
-                    fill = self.rng.choice(list(wdays.keys()), remaining,
-                                           p=[wdays[t]/total for t in wdays])
-                    types.extend(fill)
-                self.rng.shuffle(types)
-                day_weather.extend(types)
+            hourly_ghi = None
+            hourly_temp = None
+            # --- 天气序列 (旧版回退) ---
+            if self.calendar_ctx is not None:
+                day_weather = self.calendar_ctx.weather_seq
+            else:
+                day_weather = []
+                for month in range(1, 13):
+                    wdays = MONTHLY_WEATHER_DAYS[month]
+                    types = []
+                    for w, c in wdays.items():
+                        types.extend([w] * c)
+                    remaining = days_in_month[month-1] - len(types)
+                    if remaining > 0:
+                        total = sum(wdays.values())
+                        fill = self.rng.choice(list(wdays.keys()), remaining,
+                                               p=[wdays[t]/total for t in wdays])
+                        types.extend(fill)
+                    self.rng.shuffle(types)
+                    day_weather.extend(types)
 
         # --- 季节序列 ---
         day_season = []
@@ -165,21 +198,80 @@ class MicrogridOptimizer:
                 counts[dt] -= 1
                 day_types_final.append(dt)
 
+        # v6.7: ABM建筑负荷预计算 (缓存, 避免每次PSO评估重复计算)
+        abm_annual_load = None
+        if self.use_abm and self._abm is not None and use_pvgis:
+            cache_key = 'abm_8760h'
+            if cache_key not in self._abm_building_cache:
+                # 预计算365天×24h ABM建筑负荷
+                abm_load = np.zeros(8760)
+                days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+                if self.calendar_ctx is not None:
+                    day_types = self.calendar_ctx.day_types
+                    weather_seq = self.calendar_ctx.weather_seq
+                else:
+                    day_types = ['workday'] * 365
+                    weather_seq = ['clear'] * 365
+                for d in range(365):
+                    month = _day_to_month(d)
+                    h_temp = hourly_temp[d*24:(d+1)*24]
+                    h_ghi = hourly_ghi[d*24:(d+1)*24]
+                    dt = day_types[d]
+                    wt = weather_seq[d]
+                    for h in range(24):
+                        kw, _ = self._abm.simulate_hour(
+                            h, month, dt, wt,
+                            temp=float(h_temp[h]),
+                            ghi=float(h_ghi[h]))
+                        abm_load[d*24+h] = kw
+                self._abm_building_cache[cache_key] = abm_load
+            abm_annual_load = self._abm_building_cache[cache_key]
+
         pv_coeff_seq = np.zeros(8760)
         load_seq = np.zeros(8760)
         tou_seq = np.zeros(8760)
         seasons_seq = [''] * 8760
+        temp_seq = np.zeros(8760)  # v6.7: 逐时温度
 
         for d in range(365):
             season = day_season[d]
             weather = day_weather[d]
             dt = day_types_final[d]
+            month = _day_to_month(d)
 
-            pv_coeff = np.array(PV_COEFF[season]) * WEATHER_COEFF.get(weather, 1.0)
+            # v6.7: PVGIS真实逐时GHI → 光伏出力系数
+            if use_pvgis:
+                pv_coeff = hourly_ghi[d*24:(d+1)*24] / 1000.0  # STC归一化
+                hour_temp = hourly_temp[d*24:(d+1)*24]
+            else:
+                # 旧版回退: PV_COEFF * WEATHER_COEFF
+                if hasattr(self, '_ghi_clear') and month in self._ghi_clear:
+                    ghi = np.array(self._ghi_clear[month], dtype=float)
+                    wfactor = WEATHER_COEFF.get(weather, 1.0)
+                    pv_coeff = ghi / 1000.0 * wfactor
+                else:
+                    pv_coeff = np.array(PV_COEFF[season]) * WEATHER_COEFF.get(weather, 1.0)
+                hour_temp = np.full(24, MONTHLY_AMBIENT_TEMP.get(month, 20.0))
             pv_coeff_seq[d*24:(d+1)*24] = pv_coeff
+            temp_seq[d*24:(d+1)*24] = hour_temp
 
-            # 负荷含天气修正
-            load = self.get_total_load(season, dt, weather)
+            # 负荷含天气修正 (v6.7: 优先ABM预计算缓存)
+            if abm_annual_load is not None:
+                # 从预计算ABM缓存提取建筑负荷, 叠加充电负荷和耦合
+                charging = self.charging_load.get(dt, self.charging_load['workday'])
+                weather_chg = WEATHER_CHARGING_COEFF.get(weather, 1.0)
+                charging_eff = charging * weather_chg
+                building_abm = abm_annual_load[d*24:(d+1)*24]
+                active_chargers = charging_eff / 100.0
+                coupling_kw_per_ev = CHARGING_BUILDING_COUPLING.get(dt, 0.7)
+                load = charging_eff + building_abm + active_chargers * coupling_kw_per_ev
+            elif use_pvgis:
+                load = self.get_total_load(season, dt, weather,
+                                          hourly_temp=hour_temp,
+                                          hourly_ghi=pv_coeff_seq[d*24:(d+1)*24] * 1000.0,
+                                          month=month)
+            else:
+                load = self.get_total_load(season, dt, weather)
             load_seq[d*24:(d+1)*24] = load
 
             # TOU含节假日调整
@@ -190,7 +282,7 @@ class MicrogridOptimizer:
             for h in range(24):
                 seasons_seq[d*24+h] = season
 
-        return pv_coeff_seq, load_seq, tou_seq, seasons_seq
+        return pv_coeff_seq, load_seq, tou_seq, seasons_seq, temp_seq
 
     def verify_8760h(self, pv_cap, ess_cap, ess_pow):
         """8760h全时序验证 — 对最优配置运行全年仿真"""
@@ -198,7 +290,7 @@ class MicrogridOptimizer:
         self.ess_capacity = ess_cap
         self.ess_power = ess_pow
 
-        pv_coeff_seq, load_seq, tou_seq, seasons_seq = self._build_8760h_sequence()
+        pv_coeff_seq, load_seq, tou_seq, seasons_seq, temp_seq = self._build_8760h_sequence()
 
         total_grid_import = 0.0
         total_grid_export = 0.0
@@ -213,17 +305,19 @@ class MicrogridOptimizer:
 
         for d in range(365):
             season = seasons_seq[d*24]
-            month = d // 30 + 1
             pv_profile = pv_coeff_seq[d*24:(d+1)*24] * pv_cap
             load_profile = load_seq[d*24:(d+1)*24]
 
             tou_hourly = tou_seq[d*24:(d+1)*24]
-            amb_temp = MONTHLY_AMBIENT_TEMP.get(min(max(month, 1), 12), 20.0)
+            # v6.7: 逐时温度 (PVGIS实测或月均值回退)
+            hour_temp = temp_seq[d*24:(d+1)*24]
+            amb_temp = float(np.mean(hour_temp))
             result = self.simulate_daily_operation(pv_profile, load_profile, season,
                                                    tou_prices=tou_hourly,
                                                    initial_soc=soc,
                                                    foresight_horizon=24,
-                                                   ambient_temp=amb_temp)
+                                                   ambient_temp=amb_temp,
+                                                   hourly_temp=hour_temp)
             soc = result['final_soc']
             total_grid_import += result['grid_import'].sum()
             total_grid_export += result['grid_export'].sum()
@@ -268,52 +362,69 @@ class MicrogridOptimizer:
         for season in BUILDING_LOAD:
             self.building_load[season] = np.array(BUILDING_LOAD[season]) * scale
 
-    def get_total_load(self, season, day_type='workday', weather='clear'):
+    def get_total_load(self, season, day_type='workday', weather='clear',
+                        hourly_temp=None, hourly_ghi=None, month=1):
         """计算总负荷, 考虑日类型、天气和充-建耦合影响
+
+        v6.7: 支持逐时温度和GHI驱动建筑负荷 (ABM物理模型).
+        若提供hourly_temp/hourly_ghi且ABM可用, 则使用物理模型;
+        否则回退到固定季节剖面.
 
         v6.3: 新增充电-建筑负荷耦合 (文件24 §2.3)
         每辆充电车带来2-3人进入建筑, 产生0.5-2.5kW增量建筑负荷.
         """
         charging = self.charging_load.get(day_type, self.charging_load['workday'])
-        building = self.building_load.get(season, self.building_load['spring'])
-        # 建筑负荷日类型修正
-        bldg_coeff = BUILDING_DAY_TYPE_COEFF.get(day_type, 1.0)
-        # 天气修正: 恶劣天气 → 充电需求下降, 建筑负荷上升
+        # 天气修正: 恶劣天气 → 充电需求下降
         weather_chg = WEATHER_CHARGING_COEFF.get(weather, 1.0)
-        weather_bldg = WEATHER_BUILDING_COEFF.get(weather, 1.0)
-
         charging_effective = charging * weather_chg
-        building_base = building * bldg_coeff * weather_bldg
+
+        # v6.7: 优先使用ABM物理模型 (温度+GHI驱动)
+        if self.use_abm and self._abm is not None and hourly_temp is not None:
+            building_24h = np.zeros(24)
+            for h in range(24):
+                t = hourly_temp[h]
+                g = hourly_ghi[h] if hourly_ghi is not None else None
+                kw_abm, _ = self._abm.simulate_hour(h, month, day_type, weather,
+                                                    temp=t, ghi=g)
+                building_24h[h] = kw_abm
+        else:
+            building = self.building_load.get(season, self.building_load['spring'])
+            # 建筑负荷日类型修正
+            bldg_coeff = BUILDING_DAY_TYPE_COEFF.get(day_type, 1.0)
+            # 天气修正: 阴雨增加建筑负荷
+            weather_bldg = WEATHER_BUILDING_COEFF.get(weather, 1.0)
+            building_24h = building * bldg_coeff * weather_bldg
 
         # v6.3: 充电-建筑耦合 — 每辆充电车带来建筑负荷增量
-        # 估算活跃充电车辆数: charging_load / 典型充电功率(~100kW)
         active_chargers = charging_effective / 100.0
         coupling_kw_per_ev = CHARGING_BUILDING_COUPLING.get(day_type, 0.7)
         building_coupling = active_chargers * coupling_kw_per_ev
 
-        return charging_effective + building_base + building_coupling
+        return charging_effective + building_24h + building_coupling
 
     def simulate_daily_operation(self, pv_profile, load_profile, season='spring',
                                   tou_prices=None, initial_soc=None,
                                   foresight_horizon=24,
-                                  ambient_temp=None, pred_error_std=0.0):
-        """TOU感知最优调度 — 24h迭代套利算法 (v6.3: RTE/温度/自放电/预测误差)
+                                  ambient_temp=None, hourly_temp=None,
+                                  pred_error_std=0.0):
+        """TOU感知最优调度 — 24h迭代套利算法 (v6.7: 逐时温度RTE+Arrhenius)
 
         核心逻辑: 在已知24h PV+负荷曲线和分时电价的前提下,
         通过ESS在低价时段充电、高价时段放电实现最优套利.
 
-        v6.3 改进:
-        - RTE: 使用 get_rte(soc, c_rate) 替代固定0.92
-        - ESS温度衰减: 低温时可用容量下降
-        - 自放电: SOC每日衰减约0.1%
-        - 预测误差: 调度器面对的PV/负荷含噪声 (模拟实际预测不完美)
+        v6.7 改进:
+        - 逐时温度: hourly_temp 替代单一 ambient_temp 均值
+        - RTE温度依赖: 逐时温度影响充放电效率
+        - Arrhenius日历衰减: 累积等效高温小时
 
         Parameters
         ----------
         tou_prices : np.ndarray or None
             24h电价数组, 若为None则按季节自动获取.
         ambient_temp : float or None
-            环境温度(℃), 用于储能温度衰减. None则不衰减.
+            日均环境温度(℃), 用于向后兼容.
+        hourly_temp : np.ndarray or None
+            v6.7: 24h逐时温度(℃), 优先于ambient_temp.
         pred_error_std : float
             PV和负荷预测误差的标准差 (相对值), 0=完美预测.
         """
@@ -345,18 +456,28 @@ class MicrogridOptimizer:
                 'final_soc': 0.5,
             }
 
-        # v6.3: ESS温度衰减 (低温时可用容量下降)
-        if ambient_temp is not None:
+        # v6.7: ESS温度衰减 — 优先逐时温度, 回退日均温
+        if hourly_temp is not None:
+            temp_derate = float(np.mean([get_ess_temp_derate(t) for t in hourly_temp]))
+        elif ambient_temp is not None:
             temp_derate = get_ess_temp_derate(ambient_temp)
         else:
             temp_derate = 1.0
         ess_capacity_effective = self.ess_capacity * temp_derate
         ess_power_effective = self.ess_power * temp_derate
 
-        # v6.3: RTE随SOC和C-rate变化 (替代固定eta_rt=0.92)
-        def _get_eta(soc, ch_power):
+        # v6.7: RTE随SOC、C-rate和温度变化
+        def _get_eta(soc, ch_power, hour_idx=0):
             c_rate = ch_power / max(self.ess_capacity, 1.0)
-            return get_rte(soc, c_rate)
+            base_rte = get_rte(soc, c_rate)
+            # 温度修正: 低温降低效率, 高温轻微降低
+            if hourly_temp is not None and hour_idx < len(hourly_temp):
+                t = hourly_temp[hour_idx]
+                if t < 10:
+                    base_rte *= (0.90 + 0.01 * t)  # 0°C→0.90, 10°C→1.00
+                elif t > 40:
+                    base_rte *= max(0.92, 1.0 - 0.003 * (t - 40))
+            return base_rte
 
         eta_rt = _get_eta(initial_soc if initial_soc is not None else 0.5, 0.0)
         eta_one_way = np.sqrt(eta_rt)
@@ -418,15 +539,27 @@ class MicrogridOptimizer:
 
             grid_import[t_dis] = max(0, grid_import[t_dis] - dis_energy)
 
-        # 重建SOC曲线 (v6.3: 含自放电)
+        # 重建SOC曲线 (v6.7: 含温度依赖自放电)
         soc = initial_soc if initial_soc is not None else 0.5
         soc_curve = np.zeros(T)
-        self_discharge_per_hour = 0.001 / 24  # v6.3: 自放电 ~0.1%/天
+        # v6.7: 温度依赖自放电 (Arrhenius: 每+10°C自放电翻倍)
+        base_self_discharge = 0.001 / 24  # 25°C基准 ~0.1%/天
+        accumulated_arrhenius_hours = 0.0  # v6.7: Arrhenius等效高温小时
         for t in range(T):
-            # 充放电对SOC的影响 (基于有效容量)
             soc += (ess_ch[t] * eta_one_way - ess_disch[t] / eta_one_way) / ess_capacity_effective
-            # v6.3: 自放电
-            soc -= self_discharge_per_hour * soc
+            # v6.7: 温度依赖自放电
+            if hourly_temp is not None and t < len(hourly_temp):
+                t_c = hourly_temp[t]
+                arrhenius_factor = np.exp(3800.0 * (1.0/298.15 - 1.0/(t_c + 273.15)))
+                accumulated_arrhenius_hours += arrhenius_factor / 24.0
+                sd_rate = base_self_discharge * arrhenius_factor
+            elif ambient_temp is not None:
+                arrhenius_factor = np.exp(3800.0 * (1.0/298.15 - 1.0/(ambient_temp + 273.15)))
+                accumulated_arrhenius_hours += arrhenius_factor / 24.0
+                sd_rate = base_self_discharge * arrhenius_factor
+            else:
+                sd_rate = base_self_discharge
+            soc -= sd_rate * soc
             soc = np.clip(soc, SOC_MIN, SOC_MAX)
             soc_curve[t] = soc
 
@@ -453,6 +586,9 @@ class MicrogridOptimizer:
             'ess_charge': ess_ch, 'ess_discharge': ess_disch,
             'loss_of_load': loss_of_load,
             'final_soc': soc,
+            # v6.7: ESS退化相关
+            'arrhenius_hours': accumulated_arrhenius_hours,
+            'temp_derate': temp_derate,
         }
 
     def evaluate_config(self, pv_cap, ess_cap, ess_pow, params_override=None,
@@ -493,7 +629,7 @@ class MicrogridOptimizer:
         daily_temp_list = []
 
         # 构建8760h序列 (文件10: 天气+日类型+TOU)
-        pv_coeff_seq, load_seq, tou_seq, seasons_seq = self._build_8760h_sequence()
+        pv_coeff_seq, load_seq, tou_seq, seasons_seq, temp_seq = self._build_8760h_sequence()
 
         # v6.3: 使用P95负荷 (尾部风险评估)
         if use_p95:
@@ -506,19 +642,20 @@ class MicrogridOptimizer:
 
         for d in range(365):
             season = seasons_seq[d * 24]
-            month = d // 30 + 1  # 近似月份
             pv_profile = pv_coeff_seq[d * 24:(d + 1) * 24] * pv_cap
             load_profile = load_seq[d * 24:(d + 1) * 24]
             tou_hourly = tou_seq[d * 24:(d + 1) * 24]
 
-            # v6.3: 当日环境温度 (月均, 用于ESS温度衰减)
-            amb_temp = MONTHLY_AMBIENT_TEMP.get(min(max(month, 1), 12), 20.0)
+            # v6.7: 逐时温度 (PVGIS实测或月均值回退)
+            hour_temp = temp_seq[d * 24:(d + 1) * 24]
+            amb_temp = float(np.mean(hour_temp))
 
             result = self.simulate_daily_operation(
                 pv_profile, load_profile, season,
                 tou_prices=tou_hourly, initial_soc=soc,
                 foresight_horizon=6,
                 ambient_temp=amb_temp,
+                hourly_temp=hour_temp,
                 pred_error_std=pred_error)
             soc = result['final_soc']
 
@@ -538,8 +675,9 @@ class MicrogridOptimizer:
             if ess_cap > 0:
                 daily_discharge = result['ess_discharge'].sum()
                 annual_ess_cycles += daily_discharge / ess_cap
-                # v6.5: 日等效DOD (当日放电量/有效容量)
-                ess_cap_eff = ess_cap * temp_derate if 'temp_derate' in dir() else ess_cap
+                # v6.7: 日等效DOD (当日放电量/有效容量, 含温度衰减)
+                temp_derate_val = float(np.mean([get_ess_temp_derate(t) for t in hour_temp]))
+                ess_cap_eff = ess_cap * temp_derate_val
                 daily_dod = daily_discharge / max(ess_cap_eff, 1.0)
                 daily_dod_list.append(min(daily_dod, 0.95))
             daily_temp_list.append(amb_temp)

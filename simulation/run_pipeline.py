@@ -10,7 +10,7 @@ from mc_charging_load import MonteCarloChargingSimulator
 from capacity_optimization import MicrogridOptimizer
 from pv_generation import PVGenerator
 from decision_framework import DecisionFramework
-from config import PV_AREA_RATIO
+from config import PV_AREA_RATIO, load_pvgis_tmy
 
 SEED = 42
 MODE = 'medium'
@@ -22,11 +22,11 @@ print("Highway Service Area Simulation — Full Pipeline")
 print("=" * 55)
 
 # ============================================================
-# [1] MC Charging Load
+# [1] MC Charging Load (v6.6: physics model)
 # ============================================================
-print("\n[1/6] Monte Carlo EV Charging Load (n=5000)...")
-sim = MonteCarloChargingSimulator(service_area_size=MODE, seed=SEED)
-mc_scenarios = sim.simulate_all_scenarios(n_runs=5000)
+print("\n[1/6] Monte Carlo EV Charging Load (n=1000, physics model)...")
+sim = MonteCarloChargingSimulator(service_area_size=MODE, seed=SEED, year=2025)
+mc_scenarios = sim.simulate_all_scenarios(n_runs=1000)
 
 mc_summary = {}
 for dt, res_dict in mc_scenarios.items():
@@ -44,11 +44,14 @@ print(f"  OK: {len(mc_scenarios)} day types, "
       f"workday peak={mc_summary['workday']['peak_mean']:.0f}kW")
 
 # ============================================================
-# [2] PV Generation
+# [2] PV Generation (v6.6: PVGIS真实TMY)
 # ============================================================
 print("\n[2/6] PV Generation Synthesis...")
 calendar_ctx = CalendarContext(seed=SEED)
-pv_gen = PVGenerator(pv_capacity_kwp=500, seed=SEED, calendar_ctx=calendar_ctx)
+# 加载PVGIS实测TMY
+tmy = load_pvgis_tmy('wuhan')
+print(f"  TMY source: {tmy['source']}")
+pv_gen = PVGenerator(pv_capacity_kwp=500, seed=SEED, calendar_ctx=calendar_ctx, tmy_data=tmy)
 annual = pv_gen.generate_annual()
 pv_metrics = pv_gen.compute_annual_metrics(annual)
 monthly_pv = pv_gen.get_monthly_generation(annual)
@@ -60,7 +63,8 @@ print(f"  OK: annual={pv_metrics['annual_generation_kwh']:.0f}kWh, "
 # ============================================================
 print("\n[3/6] PSO Capacity Optimization (pop=40, iter=30)...")
 opt = MicrogridOptimizer(size=MODE, mc_scenarios=mc_scenarios,
-                          seed=SEED, calendar_ctx=calendar_ctx)
+                          seed=SEED, calendar_ctx=calendar_ctx, tmy_data=tmy,
+                          use_abm=True)
 opt_result, best_x = opt.optimize_pso(pop_size=40, max_iter=30, verbose=False)
 print(f"  Optimal: PV={opt_result['pv_capacity']:.0f}kWp, "
       f"ESS={opt_result['ess_capacity']:.0f}kWh, "
@@ -163,7 +167,9 @@ dec_result = df.evaluate(
     indicator_criteria_map=[0, 1, 1, 2, 3])
 dec_result.save()
 print(f"  Best: {dec_result.get_best_scheme()}")
-print(f"  TOPISIS scores: {[f'{s:.3f}' for s in dec_result.topsis_scores]}")
+ranking = dec_result.get_ranking()
+if ranking:
+    print(f"  Ranking: {ranking[:3]}")
 
 # ============================================================
 # [6] 8760h Daily Data
@@ -172,7 +178,7 @@ print("\n[6/6] Building 8760h daily dispatch data...")
 opt.pv_capacity = opt_result['pv_capacity']
 opt.ess_capacity = opt_result['ess_capacity']
 opt.ess_power = opt_result['ess_power']
-pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+pv_coeff_seq, load_seq, tou_seq, seasons_seq, temp_seq = opt._build_8760h_sequence()
 
 daily_list = []
 for d in range(365):

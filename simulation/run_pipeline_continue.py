@@ -115,7 +115,7 @@ print(f"  Best: {dec_result.get_best_scheme()}")
 # [6] 8760h Daily Data
 # ============================================================
 print("\n[6/6] Building 8760h daily dispatch data...")
-pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+pv_coeff_seq, load_seq, tou_seq, seasons_seq, _ = opt._build_8760h_sequence()
 
 daily_list = []
 for d in range(365):

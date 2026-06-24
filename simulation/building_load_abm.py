@@ -38,6 +38,31 @@ STAFF_OCCUPANCY_MEAN = 0.72
 STAFF_OCCUPANCY_STD = 0.05
 
 
+# v6.7: 空调热负荷参数 (ASHRAE Standard 90.1-2019 服务区建筑)
+# 围护结构传热系数 + 新风负荷 + 内部得热
+HVAC_PARAMS = {
+    'u_value': 1.5,            # 围护结构传热系数 W/m²·K
+    'window_ratio': 0.25,      # 窗墙比
+    'shgc': 0.40,              # 太阳得热系数
+    'infiltration_ach': 0.5,   # 渗透换气次数
+    'fresh_air_lps_m2': 0.5,   # 新风量 L/s·m²
+    't_comfort_cool': 26.0,    # 制冷舒适温度 (℃)
+    't_comfort_heat': 20.0,    # 采暖舒适温度 (℃)
+    'cop_cooling': 3.5,        # 制冷COP
+    'cop_heating': 2.8,        # 热泵采暖COP
+    'internal_gains_w_m2': 8,  # 内部得热(人员+设备+照明) W/m²
+}
+
+# v6.7: 照明参数
+LIGHTING_PARAMS = {
+    'design_lux': 500,          # 设计照度 (lux)
+    'lighting_power_w_m2': 12,  # 照明功率密度 W/m²
+    'daylight_factor': 0.02,    # 采光系数
+    'ghi_to_lux': 120,          # GHI→室外照度转换 (lux per W/m²)
+    'dimming_min': 0.15,        # 最低调光比例
+}
+
+
 class OccupantAgent:
     """单个建筑人员Agent
 
@@ -226,17 +251,88 @@ class BuildingLoadABM:
         # 基础负荷 (不可调度, 独立于人员: 路灯/弱电/冷柜等)
         self.base_load_kw = self.peak_building_kw * 0.15  # 基础负荷占峰值15%
 
+        # v6.7: 空调热负荷模型参数
+        self._env_area = self.building_area_m2  # 空调面积
+        self._u_wall = HVAC_PARAMS['u_value'] * self._env_area * 3.5  # W/K (体形系数≈3.5×面积)
+        self._fresh_air_w_k = (HVAC_PARAMS['fresh_air_lps_m2'] * self._env_area
+                               * 1.2 * 1.005 * 1000 / 1000)  # W/K: ρ·cp·flow
+
         # v6.3: 分季分时段校准因子 (替代单点校准)
         # key: (season, time_block) → calibration factor
         self._cal_factors = None
         self._calibrate_multi_point()
 
-    def simulate_hour(self, hour, month, day_type='workday', weather='clear'):
-        """模拟单小时建筑负荷 (v6.4: 月度客流波动 + 随机出勤率)
+    def _compute_hvac_load(self, t_outdoor, hour, month):
+        """v6.7: 温度驱动空调负荷 (kW)
 
-        v6.4 改进 (文件25 §4):
-        - 月度客流因子: 暑期7-8月最高(×1.25), 冬季1月最低(×0.75)
-        - 随机出勤率: N(0.72, 0.05²) 替代固定70%
+        模型: Q_hvac = (U*A + fresh_air) * |T_out - T_comfort| / COP
+               + solar_gain(Q_solar) - internal_gains
+
+        制冷: T_out > T_comfort_cool → 冷负荷; 采暖: T_out < T_comfort_heat → 热负荷
+        过渡季(T_comfort_heat ≤ T_out ≤ T_comfort_cool): 免费冷却, 仅通风
+
+        Parameters
+        ----------
+        t_outdoor : float — 室外温度 (℃)
+        hour : int — 小时 (0-23)
+        month : int — 月份 (1-12)
+        """
+        # 太阳辐射得热 (简化: daytime + south-facing)
+        solar_gain = 0.0
+        if 6 <= hour <= 18:
+            # 估算太阳辐射: 冬季低角度得热更多, 夏季高角度得热更少
+            base_solar = 400 * np.sin(np.pi * (hour - 6) / 12)  # 0→400→0 W/m²
+            solar_gain = (base_solar * self._env_area * HVAC_PARAMS['window_ratio']
+                         * HVAC_PARAMS['shgc']) / 1000.0  # kW
+
+        internal_gains = HVAC_PARAMS['internal_gains_w_m2'] * self._env_area / 1000.0  # kW
+
+        if t_outdoor > HVAC_PARAMS['t_comfort_cool']:  # 制冷模式
+            delta_t = t_outdoor - HVAC_PARAMS['t_comfort_cool']
+            q_envelope = (self._u_wall + self._fresh_air_w_k) * delta_t / 1000.0  # kW
+            q_total = q_envelope + solar_gain - internal_gains
+            return max(0, q_total / HVAC_PARAMS['cop_cooling'])
+        elif t_outdoor < HVAC_PARAMS['t_comfort_heat']:  # 采暖模式
+            delta_t = HVAC_PARAMS['t_comfort_heat'] - t_outdoor
+            q_envelope = (self._u_wall + self._fresh_air_w_k) * delta_t / 1000.0  # kW
+            q_total = q_envelope - solar_gain - internal_gains
+            return max(0, q_total / HVAC_PARAMS['cop_heating'])
+        else:
+            return 0.0  # 过渡季免费冷却
+
+    def _compute_lighting_load(self, ghi, hour):
+        """v6.7: 自然采光驱动的照明负荷 (kW)
+
+        晴天/日照充足时调暗照明, 阴天/夜间全开.
+        """
+        design_power = LIGHTING_PARAMS['lighting_power_w_m2'] * self._env_area / 1000.0  # kW
+        if ghi <= 0 or hour < 6 or hour > 19:
+            return design_power  # 夜间全开
+        # 室外照度
+        outdoor_lux = ghi * LIGHTING_PARAMS['ghi_to_lux']
+        # 室内天然光照度 ≈ outdoor_lux × daylight_factor × 室内利用系数0.5
+        indoor_daylight = outdoor_lux * LIGHTING_PARAMS['daylight_factor'] * 0.5
+        # 调光比例: 不足部分补充
+        deficit = max(0, LIGHTING_PARAMS['design_lux'] - indoor_daylight)
+        dim_ratio = np.clip(deficit / LIGHTING_PARAMS['design_lux'],
+                           LIGHTING_PARAMS['dimming_min'], 1.0)
+        return design_power * dim_ratio
+
+    def simulate_hour(self, hour, month, day_type='workday', weather='clear',
+                      temp=None, ghi=None):
+        """模拟单小时建筑负荷 (v6.7: 温度驱动空调+GHI驱动照明)
+
+        v6.7 改进:
+        - 空调负荷基于室外温度热模型 (ASHRAE 90.1) 替代固定ac设备
+        - 照明负荷基于GHI自然采光调光
+        - 38°C高温天空调飙升, 阴雨天照明增加
+
+        Parameters
+        ----------
+        temp : float or None
+            v6.7: 室外温度(℃), None则维持原固定模式.
+        ghi : float or None
+            v6.7: 水平面总辐射(W/m²), None则维持原固定模式.
 
         Returns
         -------
@@ -247,8 +343,23 @@ class BuildingLoadABM:
         """
         season = get_season(month)
 
-        # 天气对建筑负荷的影响 (阴雨增加照明和空调)
+        # 天气对建筑负荷的影响 (阴雨增加照明和空调, 旧版兼容)
         wc = WEATHER_BUILDING_COEFF.get(weather, 1.0)
+
+        # v6.7: 温度驱动空调负荷
+        if temp is not None and self._env_area > 0:
+            hvac_kw = self._compute_hvac_load(temp, hour, month)
+            # 天气修正: 阴雨天温度驱动力不变, 但湿度增加潜热负荷
+            if weather in ('overcast', 'rain'):
+                hvac_kw *= 1.08  # 潜热+8%
+        else:
+            hvac_kw = 0.0
+
+        # v6.7: GHI驱动照明负荷
+        if ghi is not None and ghi >= 0:
+            lighting_kw = self._compute_lighting_load(ghi, hour)
+        else:
+            lighting_kw = 0.0
 
         # v6.4: 月度客流波动因子
         monthly_factor = MONTHLY_VISITOR_FACTOR.get(month, 1.0)
@@ -267,7 +378,7 @@ class BuildingLoadABM:
         occupancy = np.clip(self.rng.normal(STAFF_OCCUPANCY_MEAN, STAFF_OCCUPANCY_STD), 0.55, 0.90)
         n_staff_active = int(len([a for a in self.agents if a.agent_type == 'staff']) * occupancy)
 
-        # 收集所有agent的负荷
+        # 收集所有agent的负荷 (排除ac和lighting, 由物理模型计算)
         total_device_loads = {}
         n_present = 0
 
@@ -281,6 +392,9 @@ class BuildingLoadABM:
             if loads:
                 n_present += 1
                 for dev, power in loads.items():
+                    # v6.7: 排除ac/ac_fan/lighting (改用物理模型)
+                    if dev in ('ac', 'ac_fan', 'lighting') and (temp is not None or ghi is not None):
+                        continue
                     total_device_loads[dev] = total_device_loads.get(dev, 0) + power
 
         # v6.3: 使用预创建司机池 (时间连续性)
@@ -290,23 +404,31 @@ class BuildingLoadABM:
             if loads:
                 n_present += 1
                 for dev, power in loads.items():
+                    if dev in ('ac', 'ac_fan', 'lighting') and (temp is not None or ghi is not None):
+                        continue
                     total_device_loads[dev] = total_device_loads.get(dev, 0) + power
 
         # W → kW, 叠加天气影响
         agent_load_kw = sum(total_device_loads.values()) / 1000 * wc
 
-        # 基准负荷 + agent负荷
+        # 基准负荷 (不可调度设备)
         base = self.base_load_kw * wc
 
-        total_kw = base + agent_load_kw
+        # v6.7: 物理模型负荷 + agent负荷 + 基准负荷
+        total_kw = base + agent_load_kw + hvac_kw + lighting_kw
 
-        # v6.3: 分季分时段校准
+        # v6.3: 分季分时段校准 (仅在无物理模型时完全生效)
         cal_factor = self._get_cal_factor(season, hour)
+        if temp is not None:
+            # 物理模型已替代空调, 校准因子仅微调
+            cal_factor = 0.3 + 0.7 * cal_factor
         total_kw *= cal_factor
 
         breakdown = {
             'base': base * cal_factor,
             'agent': agent_load_kw * cal_factor,
+            'hvac': hvac_kw * cal_factor,
+            'lighting': lighting_kw * cal_factor,
             'total': total_kw,
             'n_present': n_present,
         }

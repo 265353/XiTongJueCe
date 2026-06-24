@@ -891,5 +891,204 @@ RESIDUAL_RATE_ESS = 0.05       # 储能 5% (15年)
 RESIDUAL_RATE_CHARGING = 0.05  # 充电桩 5% (10年)
 
 
+# ============================================================
+# v6.6: 高速充电物理建模参数 (物理模型驱动，替代文献假设)
+# ============================================================
+
+# 高速公路交通流量剖面 (文件17 §5.2 + 交通运输部统计)
+# hourly_pct: 24小时车流量占比 (%), 和为100
+# daily_base: 日均过境车辆数 (辆), 中型服务区参考值
+HIGHWAY_TRAFFIC_PROFILE = {
+    'workday': {
+        'hourly_pct': [1, 1, 1, 1, 2, 4, 6, 8, 10, 10, 8, 6, 8, 10, 10, 8, 6, 4, 3, 2, 1, 0, 0, 0],
+        'daily_base': 8000,
+    },
+    'weekend': {
+        'hourly_pct': [2, 1, 1, 1, 2, 5, 8, 10, 12, 11, 9, 7, 9, 11, 12, 10, 8, 6, 4, 3, 2, 1, 1, 1],
+        'daily_base': 10000,
+    },
+    'holiday': {
+        'hourly_pct': [3, 2, 1, 1, 3, 6, 9, 11, 13, 12, 10, 8, 10, 12, 13, 11, 9, 7, 5, 4, 3, 2, 2, 2],
+        'daily_base': 15000,
+    },
+    'spring_festival': {
+        'hourly_pct': [3, 2, 2, 2, 4, 7, 10, 12, 14, 13, 10, 8, 10, 13, 14, 12, 10, 8, 6, 5, 4, 3, 3, 3],
+        'daily_base': 20000,
+    },
+}
+
+# NEV渗透率预测 (公安部统计 + 中汽协预测)
+# 2024年底NEV保有量占比约8%，新车渗透率~35%
+# 高速场景NEV占比略低于平均 (长续航需求)
+NEV_PENETRATION_HIGHWAY = {
+    2024: 0.18, 2025: 0.22, 2026: 0.28, 2027: 0.35,
+    2028: 0.42, 2029: 0.48, 2030: 0.55, 2031: 0.60,
+    2032: 0.65, 2033: 0.70, 2034: 0.74, 2035: 0.78,
+}
+
+# 充电转化率 — 进入服务区的NEV中实际需要充电的比例
+# 取决于: 续航里程/服务区间距/充电焦虑/排队情况
+# 文件17 §3.3: 日均充电车次50-150 / 日过境NEV约500-1500 → 10-15%
+CHARGING_CONVERSION_RATE = {
+    'workday': 0.10,            # 工作日: 充电需求较低
+    'weekend': 0.12,            # 周末: 略高
+    'holiday': 0.15,            # 节假日: 长途出行，刚需
+    'spring_festival': 0.14,    # 春节: 高但部分车主避开高峰
+}
+
+# 高速行驶里程分布 (高德出行报告 + 服务区间距)
+# 到达服务区时的累计行驶里程
+HIGHWAY_MILEAGE_DIST = {
+    'mu_km': 180,      # 均值 (km)
+    'sigma_km': 80,    # 标准差
+    'min_km': 50,      # 最小 (至少一个服务区间距)
+    'max_km': 500,     # 最大 (单次高速长途)
+}
+
+# 出发时SOC分布 (用户习惯)
+# 假设用户出发前会充电，但不一定充满
+DEPARTURE_SOC_DIST = {
+    'mean': 0.85,      # 平均出发SOC
+    'std': 0.10,       # 标准差
+    'min': 0.50,       # 最低出发SOC (用户至少会充到50%)
+    'max': 1.00,
+}
+
+# CC-CV充电曲线参数 (GB/T 27930-2023 + 厂商规格书)
+CC_CV_PARAMS = {
+    'cc_cv_soc': 0.80,           # CC-CV转换点
+    'cv_end_power_ratio': 0.20,  # CV阶段结束时功率比例
+    'efficiency': 0.93,          # 充电效率 (GB/T 18487.1)
+    'min_power_ratio': 0.10,     # 最低功率比例
+}
+
+# 服务区平均间距 (km) — 用于推算是否需要充电
+SERVICE_AREA_SPACING_KM = 50
+
+# 充电焦虑阈值 — SOC低于此值时用户倾向于充电
+CHARGING_ANXIETY_SOC = 0.30
+
+
+def get_nev_penetration(year=2025):
+    """获取指定年份的高速NEV渗透率"""
+    if year in NEV_PENETRATION_HIGHWAY:
+        return NEV_PENETRATION_HIGHWAY[year]
+    # 外推
+    years = sorted(NEV_PENETRATION_HIGHWAY.keys())
+    if year < years[0]:
+        return NEV_PENETRATION_HIGHWAY[years[0]]
+    if year > years[-1]:
+        # 线性外推，上限80%
+        last_rate = NEV_PENETRATION_HIGHWAY[years[-1]]
+        return min(0.80, last_rate + 0.03 * (year - years[-1]))
+    return NEV_PENETRATION_HIGHWAY.get(year, 0.25)
+
+
+def compute_arrival_soc(mileage_km, battery_kwh, consumption_kwh_100km, departure_soc=0.85):
+    """
+    基于行驶里程计算到站SOC
+
+    Parameters
+    ----------
+    mileage_km : float
+        行驶里程 (km)
+    battery_kwh : float
+        电池容量 (kWh)
+    consumption_kwh_100km : float
+        百公里能耗 (kWh/100km)
+    departure_soc : float
+        出发SOC
+
+    Returns
+    -------
+    float : 到站SOC (0-1)
+    """
+    consumed = mileage_km * consumption_kwh_100km / 100.0
+    soc = departure_soc - consumed / battery_kwh
+    return max(0.05, min(soc, departure_soc))
+
+
 if __name__ == '__main__':
     print_cost_breakdown()
+
+
+# ============================================================
+# v6.6: PVGIS真实TMY数据接入
+# ============================================================
+
+def _int_key_dict(d):
+    """将字符串key的dict转换为int key"""
+    if d is None:
+        return None
+    return {int(k): v for k, v in d.items()}
+
+
+def load_pvgis_tmy(location='wuhan'):
+    """
+    从 data/ 目录加载PVGIS实测TMY数据，转换为config兼容格式。
+    优先真实数据，回退到config硬编码值。
+
+    Parameters
+    ----------
+    location : str
+        位置key (wuhan, beijing, guangzhou, ...)
+
+    Returns
+    -------
+    dict: {
+        'TMY_GHI_CLEAR': {1-12: [24 floats]},
+        'TMY_HOURLY_TEMP': {1-12: [24 floats]},
+        'TMY_HOURLY_WIND': {1-12: [24 floats]},
+        'source': str,        # 'pvgis' or 'config_fallback'
+        'meta': dict,
+    }
+    """
+    import os, json
+    data_dir = os.path.join(os.path.dirname(__file__), 'data')
+    fpath = os.path.join(data_dir, f'pvgis_tmy_{location}.json')
+
+    if os.path.exists(fpath):
+        try:
+            with open(fpath, 'r', encoding='utf-8') as f:
+                pvgis = json.load(f)
+
+            ghi = _int_key_dict(pvgis.get('monthly_ghi_clear'))
+            temp = _int_key_dict(pvgis.get('monthly_temp'))
+            wind = _int_key_dict(pvgis.get('monthly_wind'))
+            meta = pvgis.get('meta', {})
+            stats = pvgis.get('annual_stats', {})
+
+            if ghi and temp:
+                return {
+                    'TMY_GHI_CLEAR': ghi,
+                    'TMY_HOURLY_TEMP': temp,
+                    'TMY_HOURLY_WIND': wind,
+                    'source': f'pvgis_{location}',
+                    'meta': meta,
+                    'annual_stats': stats,
+                }
+        except Exception:
+            pass  # 回退到硬编码
+
+    # 回退: config硬编码值
+    return {
+        'TMY_GHI_CLEAR': TMY_GHI_CLEAR,
+        'TMY_HOURLY_TEMP': TMY_HOURLY_TEMP,
+        'TMY_HOURLY_WIND': None,
+        'source': 'config_hardcoded',
+        'meta': {'label': f'{location} (文献估算)'},
+        'annual_stats': None,
+    }
+
+
+def list_pvgis_locations():
+    """列出所有可用的PVGIS TMY位置"""
+    import os
+    data_dir = os.path.join(os.path.dirname(__file__), 'data')
+    if not os.path.isdir(data_dir):
+        return []
+    locations = []
+    for f in os.listdir(data_dir):
+        if f.startswith('pvgis_tmy_') and f.endswith('.json'):
+            locations.append(f.replace('pvgis_tmy_', '').replace('.json', ''))
+    return sorted(locations)

@@ -36,28 +36,36 @@ from config import (
     EV_CHARGING_HIGHWAY_GROWTH, LOAD_GROWTH_MODEL, LOAD_GROWTH_BASE_YEAR,
     PV_AREA_RATIO, TRANSFORMER_CAPACITY_KVA, TRANSFORMER_PF_MIN,
     PV_COST_PER_KWP, MTBF, MTTR, WEATHER_TRANSITION_MATRIX,
+    load_pvgis_tmy,  # v6.6: PVGIS TMY数据加载
     WEATHER_SEASONAL_PERSISTENCE, SECOND_ORDER_ALPHA,
     MONTHLY_ARRIVAL_MULTIPLIER, CHARGING_PENETRATION,
     HOURLY_ARRIVAL_RATE,
     CHARGING_BUILDING_COUPLING, get_load_growth_factor,
     get_calendar_fade_rate, get_cycle_life_at_dod,
     get_battery_yearly_degradation, get_rte, get_ess_temp_derate,
+    # v7.0: 细粒度可视化
+    HIGHWAY_TRAFFIC_PROFILE, CC_CV_PARAMS, CHARGE_EFFICIENCY,
+    NEV_PENETRATION_HIGHWAY, CHARGING_CONVERSION_RATE,
 )
 from calendar_utils import CalendarContext
 from mc_charging_load import MonteCarloChargingSimulator
 from capacity_optimization import MicrogridOptimizer
 
-app = FastAPI(title="高速服务区光储充微网仿真系统", version="6.5")
+app = FastAPI(title="高速服务区光储充微网仿真系统", version="7.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 BASE_DIR = os.path.dirname(__file__)
 RESULTS_DIR = os.path.join(BASE_DIR, 'results')
 STATIC_DIR = os.path.join(BASE_DIR, 'static')
+DATA_DIR = os.path.join(BASE_DIR, 'data')
 SEED = 42
 
-# 全局缓存: 启动时加载已有结果 + 预计算MC/8760h
+# 全局缓存
 _cache = {}
-_sim_cache = {}  # 预计算的重仿真数据
+_sim_cache = {}
+
+# 外部数据管理器 (延迟初始化)
+_data_manager = None
 
 
 def load_json(filename):
@@ -68,13 +76,37 @@ def load_json(filename):
     return None
 
 
+def _sanitize_nan(obj):
+    """递归替换NaN/Inf为None (JSON可序列化)"""
+    import math
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    elif isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [_sanitize_nan(v) for v in obj]
+    elif isinstance(obj, (np.floating, np.integer)):
+        val = float(obj) if isinstance(obj, np.floating) else obj
+        try:
+            if math.isnan(float(val)) or math.isinf(float(val)):
+                return None
+        except (TypeError, ValueError):
+            pass
+        return float(obj)
+    return obj
+
+
 def _build_sim_cache():
     """预计算MC和8760h序列, 避免每次API调用重复仿真"""
     print("Pre-computing simulation cache (MC + 8760h sequence)...")
     cal = CalendarContext(seed=SEED)
     mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
     mc = mc_sim.simulate_all_scenarios(n_runs=200)  # 快速
-    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc, seed=SEED, calendar_ctx=cal)
+    tmy = load_pvgis_tmy('wuhan')
+    print(f"  TMY source: {tmy['source']}")
+    opt = MicrogridOptimizer(size='medium', mc_scenarios=mc, seed=SEED, calendar_ctx=cal, tmy_data=tmy)
     opt_result = _cache.get('optimization', {})
     pv_cap = opt_result.get('pv_capacity', 1231)
     ess_cap = opt_result.get('ess_capacity', 2000)
@@ -82,7 +114,7 @@ def _build_sim_cache():
     opt.pv_capacity = pv_cap
     opt.ess_capacity = ess_cap
     opt.ess_power = ess_pow
-    pv_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+    pv_seq, load_seq, tou_seq, seasons_seq, _ = opt._build_8760h_sequence()
     _sim_cache['calendar'] = cal
     _sim_cache['opt'] = opt
     _sim_cache['mc'] = mc
@@ -98,6 +130,7 @@ def _build_sim_cache():
 
 @app.on_event("startup")
 def startup():
+    global _data_manager
     _cache['mc_summary'] = load_json('mc_summary.json')
     _cache['optimization'] = load_json('optimization_result.json')
     _cache['pareto'] = load_json('pareto_results.json')
@@ -108,6 +141,20 @@ def startup():
     except Exception as e:
         print(f"  WARN: Sim cache build failed: {e}")
 
+    # 初始化外部数据管理器
+    try:
+        from data_loader import DataManager
+        import config as config_module
+        _data_manager = DataManager(config_module=config_module)
+        load_result = _data_manager.load_all_from_disk()
+        print(f"  DataManager: loaded {load_result['total_files']} external data files")
+        for src, info in load_result.get('sources', {}).items():
+            if isinstance(info, dict):
+                loaded = info.get('loaded', info.get('total_sessions', '?'))
+                print(f"    {src}: {loaded}")
+    except Exception as e:
+        print(f"  WARN: DataManager init failed: {e}")
+
 
 # ============================================================
 # API: 仿真结果
@@ -115,14 +162,24 @@ def startup():
 
 @app.get("/api/health")
 def health():
+    dm_status = "not_initialized"
+    pvgis_count = 0
+    if _data_manager is not None:
+        dm_status = "ok"
+        pvgis_count = len(_data_manager._tmy_cache)
+
     return {
         "status": "ok",
-        "version": "6.5",
+        "version": "7.0",
         "data_available": {
             "mc_summary": _cache['mc_summary'] is not None,
             "optimization": _cache['optimization'] is not None,
             "pareto": _cache['pareto'] is not None,
             "decision": _cache['decision'] is not None,
+        },
+        "external_data": {
+            "status": dm_status,
+            "pvgis_locations": pvgis_count,
         }
     }
 
@@ -148,7 +205,8 @@ def get_pareto():
 @app.get("/api/results/decision")
 def get_decision():
     """AHP-TOPSIS决策结果"""
-    return JSONResponse(_cache.get('decision', {}))
+    data = _cache.get('decision', {})
+    return JSONResponse(_sanitize_nan(data))
 
 
 # ============================================================
@@ -189,6 +247,304 @@ def get_config():
             "building_peak_kw": 147,
         },
     }
+
+
+# ============================================================
+# API: 外部数据 & 校准 (v6.6)
+# ============================================================
+
+@app.get("/api/data/status")
+def get_data_status():
+    """外部数据加载状态"""
+    if _data_manager is None:
+        return JSONResponse({"status": "not_initialized"})
+
+    calibration = _data_manager.get_calibration_api_data()
+    return JSONResponse({
+        "status": "ok",
+        "external_data_available": {
+            "pvgis_tmy": calibration['status'].get('pvgis_locations', []),
+            "acndata": calibration['status'].get('has_acndata', False),
+            "nasa_power": calibration['status'].get('has_nasa_power', False),
+        },
+        "pvgis_location_count": len(calibration['status'].get('pvgis_locations', [])),
+        "acndata_total_sessions": calibration.get('acndata', {}).get('total_sessions', 0),
+    })
+
+
+@app.get("/api/data/tmy-comparison")
+def get_tmy_comparison(location: str = Query('wuhan', description='Location key')):
+    """PVGIS TMY vs config.py 逐时对比数据"""
+    if _data_manager is None:
+        return JSONResponse({"error": "DataManager not initialized"}, status_code=503)
+
+    calibration = _data_manager.get_calibration_api_data()
+    tmy_data = calibration.get('tmy', {})
+
+    if not tmy_data:
+        return JSONResponse({"error": f"No TMY data for '{location}'"}, status_code=404)
+
+    return JSONResponse(tmy_data)
+
+
+@app.get("/api/data/tmy-multi-city")
+def get_tmy_multi_city():
+    """10城市TMY对比汇总"""
+    if _data_manager is None:
+        return JSONResponse({"error": "DataManager not initialized"}, status_code=503)
+
+    calibration = _data_manager.get_calibration_api_data()
+
+    # Build simplified multi-city table from PVGIS cache
+    cities = []
+    for loc_key, tmy in _data_manager._tmy_cache.items():
+        stats = tmy.get('annual_stats', {})
+        meta = tmy.get('meta', {})
+        cities.append({
+            'key': loc_key,
+            'name': meta.get('label', loc_key),
+            'lat': meta.get('lat'),
+            'lon': meta.get('lon'),
+            'ghi_kwh_m2': stats.get('ghi_kwh_m2'),
+            'ghi_peak_w_m2': stats.get('ghi_peak_w_m2'),
+            'ghi_peak_month': stats.get('ghi_peak_month'),
+            'mean_temp_c': stats.get('mean_temp_c'),
+            'temp_min_c': stats.get('temp_min_c'),
+            'temp_max_c': stats.get('temp_max_c'),
+            'mean_wind_m_s': stats.get('mean_wind_m_s'),
+        })
+
+    return JSONResponse({
+        'cities': sorted(cities, key=lambda c: c.get('ghi_kwh_m2', 0), reverse=True),
+        'count': len(cities),
+    })
+
+
+@app.get("/api/data/acndata-distribution")
+def get_acndata_distribution():
+    """ACN-Data充电行为分布数据"""
+    if _data_manager is None:
+        return JSONResponse({"error": "DataManager not initialized"}, status_code=503)
+
+    calibration = _data_manager.get_calibration_api_data()
+    acn = calibration.get('acndata', {})
+
+    if not acn:
+        return JSONResponse({"error": "No ACN-Data loaded"}, status_code=404)
+
+    return JSONResponse(acn)
+
+
+@app.get("/api/data/calibration")
+def get_calibration_report():
+    """完整校准报告: 外部数据 vs config.py"""
+    if _data_manager is None:
+        return JSONResponse({"error": "DataManager not initialized"}, status_code=503)
+
+    calibration = _data_manager.get_calibration_api_data()
+    return JSONResponse({
+        "status": calibration['status'],
+        "tmy": calibration.get('tmy', {}),
+        "acndata_summary": {
+            'total_sessions': calibration.get('acndata', {}).get('total_sessions'),
+            'sites': calibration.get('acndata', {}).get('sites'),
+            'session_stats': calibration.get('acndata', {}).get('session_stats'),
+            'applicability': calibration.get('acndata', {}).get('applicability'),
+        },
+        "multi_city": calibration.get('comparison_matrix', {}),
+        "recommendations": calibration.get('recommendations', []),
+        "generated_at": calibration.get('comparison_matrix', {}).get('generated_at', ''),
+    })
+
+
+# ============================================================
+# API: 细粒度模型可视化 (v7.0)
+# ============================================================
+
+@app.get("/api/data/charging-curve")
+def get_charging_curve():
+    """CC-CV充电功率曲线 (SOC 0→100%, 4功率档)"""
+    from charging_curve import cc_cv_power_curve
+    soc_range = [round(i * 0.01, 2) for i in range(101)]
+    curves = {}
+    for power in [60, 120, 240, 480]:
+        curves[str(power)] = [round(cc_cv_power_curve(s, power), 1) for s in soc_range]
+    return JSONResponse({
+        "soc": soc_range,
+        "curves": curves,
+        "cc_cv_soc": CC_CV_PARAMS['cc_cv_soc'],
+        "cv_end_ratio": CC_CV_PARAMS['cv_end_power_ratio'],
+        "efficiency": CC_CV_PARAMS['efficiency'],
+        "source": "GB/T 27930-2023 + charge curve module",
+    })
+
+
+@app.get("/api/data/traffic-profile")
+def get_traffic_profile():
+    """交通流量24h分布 (4日型, 新旧模型对比)"""
+    old_rates = HOURLY_ARRIVAL_RATE
+    new_rates = HIGHWAY_TRAFFIC_PROFILE
+
+    return JSONResponse({
+        "day_types": ["workday", "weekend", "holiday", "spring_festival"],
+        "old_model": {
+            dt: {"hourly": old_rates.get(dt, old_rates['workday']),
+                 "total": sum(old_rates.get(dt, old_rates['workday']))}
+            for dt in ["workday", "weekend", "holiday", "spring_festival"]
+        },
+        "new_model": {
+            dt: {"hourly_pct": new_rates[dt]['hourly_pct'],
+                 "daily_base": new_rates[dt]['daily_base']}
+            for dt in ["workday", "weekend", "holiday", "spring_festival"]
+        },
+        "nev_penetration": {str(y): v for y, v in NEV_PENETRATION_HIGHWAY.items()},
+        "charging_conversion": CHARGING_CONVERSION_RATE,
+        "source": "文件17 + 交通运输部统计",
+        "model_version": "v6.6",
+    })
+
+
+@app.get("/api/data/vehicle-sample")
+def get_vehicle_sample(n: int = Query(30, ge=5, le=100)):
+    """随机抽样N辆车的诊断数据 (里程/SOC/功率/时长)"""
+    from mc_charging_load import MonteCarloChargingSimulator
+    sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
+    samples = []
+    for _ in range(n):
+        v = sim._sample_vehicle(month=6)
+        # CC-CV时长
+        eff_power = min(v['power'], v['max_power'])
+        from charging_curve import calculate_charging_duration
+        dur_min = calculate_charging_duration(v['soc_arrival'], v['target_soc'],
+                                               v['battery_cap'], eff_power,
+                                               efficiency=CHARGE_EFFICIENCY,
+                                               params=CC_CV_PARAMS) * 60
+        samples.append({
+            "vt": v['vt_name'],
+            "mileage_km": round(v['mileage_km'], 1),
+            "battery_kwh": round(v['battery_cap'], 1),
+            "consumption": round(v['energy_cons'], 1),
+            "departure_soc": round(v['departure_soc'], 3),
+            "arrival_soc": round(v['soc_arrival'], 3),
+            "target_soc": round(v['target_soc'], 3),
+            "charge_kwh": round(v['charge_needed'], 1),
+            "power_kw": int(round(eff_power, 0)),
+            "duration_min": round(dur_min, 1),
+        })
+    return JSONResponse({"samples": samples, "count": len(samples),
+                         "source": "physics model v6.6", "cached": False})
+
+
+@app.get("/api/data/hyperparams")
+def get_hyperparams():
+    """config.py超参数分类列表"""
+    import config as cfg
+    categories = {
+        "服务区规模": ["SERVICE_AREA_CONFIG", "DAY_TYPE_COEFF"],
+        "电动汽车&充电": ["VEHICLE_TYPES", "CHARGE_POWER_DIST", "TARGET_SOC_MEAN",
+                "CHARGE_EFFICIENCY", "HOURLY_ARRIVAL_RATE", "CHARGING_PENETRATION",
+                "HIGHWAY_TRAFFIC_PROFILE", "CHARGING_CONVERSION_RATE",
+                "HIGHWAY_MILEAGE_DIST", "CC_CV_PARAMS"],
+        "光伏&气象": ["PV_COEFF", "WEATHER_COEFF", "TMY_GHI_CLEAR", "TMY_HOURLY_TEMP",
+                "PV_TEMP_COEFF", "PV_NOCT", "PV_STC_TEMP", "PV_AREA_RATIO"],
+        "储能系统": ["ESS_COST", "SOC_MIN", "SOC_MAX", "ESS_CYCLE_LIFE"],
+        "经济&市场": ["TOU_PRICE_VALUES", "CCER_PRICE", "DISCOUNT_RATE",
+                "PROJECT_LIFE", "FEED_IN_PRICE", "PV_COST"],
+        "设备&可靠性": ["LIFESPAN", "OM_RATE", "MTBF", "MTTR", "PILE_AVAILABILITY"],
+        "演化&场景": ["SCENARIOS", "NEV_PENETRATION_HIGHWAY", "BASS_P", "BASS_Q"],
+    }
+
+    params = []
+    for cat, keys in categories.items():
+        for k in keys:
+            v = getattr(cfg, k, None)
+            if v is None:
+                continue
+            display = str(v)
+            if len(display) > 80:
+                display = display[:77] + '...'
+            params.append({
+                "name": k,
+                "value": display,
+                "category": cat,
+            })
+
+    return JSONResponse({"params": params, "total": len(params),
+                         "source": "config.py", "version": "v6.6"})
+
+
+@app.get("/api/data/pv-model")
+def get_pv_model_params():
+    """Kasten-Czeplak曲线 + Sandia热模型参数"""
+    from config import kasten_czeplak_ghi
+    # Kasten-Czeplak curve
+    oktas_range = list(range(9))
+    kc_curve = [round(kasten_czeplak_ghi(1000, n), 1) for n in oktas_range]
+
+    # Sandia model parameters
+    sandia = {
+        "NOCT": PV_NOCT,
+        "STC_temp": PV_STC_TEMP,
+        "temp_coeff_per_C": PV_TEMP_COEFF,
+        "formula": "T_cell = T_amb + (NOCT-20) * G / 800",
+        "power_correction": "P = P_stc * (1 + gamma * (T_cell - T_stc))",
+    }
+
+    # Weather attenuation coefficients
+    weather_coeffs = {k: round(v, 2) for k, v in WEATHER_COEFF.items()}
+
+    # Cloud oktas mapping
+    cloud_map = {'clear': 0, 'partly_cloudy': 3, 'cloudy': 5.5,
+                 'overcast': 7.5, 'rain': 8}
+
+    return JSONResponse({
+        "kasten_czeplak": {"oktas": oktas_range, "ghi_1000": kc_curve},
+        "sandia": sandia,
+        "weather_coeffs": weather_coeffs,
+        "cloud_oktas_map": cloud_map,
+        "pv_coeff_seasonal": {s: [round(v, 3) for v in vals]
+                              for s, vals in PV_COEFF.items()},
+        "source": "文件24 §1.3 + Sandia model",
+    })
+
+
+@app.get("/api/results/algo-comparison")
+def get_algo_comparison():
+    """多优化算法对比结果"""
+    algo = load_json('algorithm_comparison.json')
+    opt = _cache.get('optimization', {})
+
+    methods = {
+        "pso": {"name": "PSO 粒子群", "color": "#00c8f0",
+                "params": {"pop_size": 40, "max_iter": 30, "w": 0.7, "c1": 1.5, "c2": 1.5}},
+        "nsga2": {"name": "NSGA-II 遗传", "color": "#40e0a0",
+                  "params": {"pop_size": 100, "generations": 50, "crossover_p": 0.9, "mutation_p": 0.1}},
+        "ga": {"name": "GA 遗传算法", "color": "#f0a020",
+               "params": {"pop_size": 80, "generations": 40, "crossover_p": 0.8, "mutation_p": 0.15}},
+        "egpso": {"name": "EGPSO 增强粒子群", "color": "#e04050",
+                  "params": {"pop_size": 40, "max_iter": 30, "w_start": 0.9, "w_end": 0.4}},
+        "robust": {"name": "鲁棒优化", "color": "#a060d0",
+                   "params": {"scenarios": ["baseline", "conservative", "aggressive"], "gamma": 0.3}},
+    }
+
+    # PSO optimal (from cache)
+    current_best = {
+        "method": "pso",
+        "pv_capacity": opt.get('pv_capacity', 1231),
+        "ess_capacity": opt.get('ess_capacity', 1075),
+        "ess_power": opt.get('ess_power', 537),
+        "npc_wan": round((opt.get('npc', 31137000) or 31137000) / 10000, 1),
+        "ssr": round(opt.get('self_sufficiency', 0.47), 3),
+        "payback_years": round(opt.get('payback_years', 8.9), 1),
+    }
+
+    return JSONResponse({
+        "methods": methods,
+        "current_best": current_best,
+        "algo_data": algo if algo else {},
+        "note": "全算法对比需运行 optimization_comparison.py",
+        "source": "capacity_optimization.py + nsga2.py",
+    })
 
 
 # ============================================================
@@ -300,6 +656,18 @@ def simulate_year_summary(
     monthly_ssr = np.zeros(12)
     monthly_days = np.zeros(12)
 
+    month_of_day = cal.month_of_day
+    # 预计算 day_of_month
+    dom = [1] * 365
+    m_start = 0
+    days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    for m in range(12):
+        for dd in range(days_in_month[m]):
+            idx = m_start + dd
+            if idx < 365:
+                dom[idx] = dd + 1
+        m_start += days_in_month[m]
+
     for d in range(365):
         season = seasons_seq[d * 24]
         pv_profile = pv_seq[d * 24:(d + 1) * 24] * pv_cap
@@ -316,7 +684,8 @@ def simulate_year_summary(
 
         daily_results.append({
             'day': d,
-            'month': cal.month_of_day[d],
+            'month': month_of_day[d],
+            'day_of_month': dom[d],
             'season': season,
             'day_type': cal.day_types[d],
             'weather': cal.weather_seq[d],
@@ -357,7 +726,7 @@ def simulate_year_summary(
             'grid': monthly_grid.tolist(),
             'ssr': [round(float(v), 4) for v in monthly_ssr],
         },
-        'daily': daily_results[::7],
+        'daily': daily_results,
     }
 
 
@@ -399,7 +768,7 @@ def simulate_mc_distribution(
         }
     # 回退到实时仿真
     sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
-    result = sim.simulate_scenario(day_type, weather, month, n_runs=n_runs)
+    result = sim.simulate_monte_carlo(day_type, n_runs=n_runs, month=month, weather=weather)
     return {
         'params': {'day_type': day_type, 'weather': weather, 'month': month},
         'hourly_p50': result['p50'].tolist(),

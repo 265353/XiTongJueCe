@@ -91,6 +91,24 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
 .sp-viz-tab { background:rgba(15,31,56,0.8); color:#5a8aaa; border:1px solid var(--border); padding:4px 10px; border-radius:4px; cursor:pointer; font-size:10px; transition:all 0.2s; white-space:nowrap; }
 .sp-viz-tab:hover { background:rgba(0,200,240,0.1); color:var(--bright); }
 .sp-viz-tab.active { background:rgba(0,200,240,0.15); color:var(--accent); border-color:var(--accent); }
+	/* Glossary Modal */
+	.glossary-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:9999; display:flex; align-items:center; justify-content:center; }
+	.glossary-overlay.hidden { display:none; }
+	.glossary-modal { background:var(--panel); border:1px solid var(--border); border-radius:12px; width:min(900px,95vw); max-height:85vh; display:flex; flex-direction:column; box-shadow:0 16px 48px rgba(0,0,0,0.5); }
+	.glossary-modal .gm-header { display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border); flex-shrink:0; }
+	.glossary-modal .gm-header h2 { font-size:16px; color:var(--accent); }
+	.glossary-modal .gm-close { background:none; border:none; color:var(--text); font-size:20px; cursor:pointer; padding:4px 8px; border-radius:4px; transition:all 0.2s; }
+	.glossary-modal .gm-close:hover { color:var(--bright); background:rgba(255,255,255,0.05); }
+	.glossary-modal .gm-body { overflow-y:auto; padding:16px 20px; flex:1; }
+	.glossary-modal .gm-section { margin-bottom:18px; }
+	.glossary-modal .gm-section h3 { font-size:13px; color:var(--accent2); margin-bottom:8px; padding-bottom:4px; border-bottom:1px solid rgba(26,58,90,0.3); }
+	.glossary-modal .gm-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:6px 16px; }
+	.glossary-modal .gm-item { display:flex; gap:8px; font-size:11px; line-height:1.6; padding:2px 0; }
+	.glossary-modal .gm-item .gm-abbr { color:var(--accent); font-weight:600; min-width:70px; flex-shrink:0; }
+	.glossary-modal .gm-item .gm-desc { color:#7a9ab0; }
+	/* Header help button */
+	.header .btn-help { background:rgba(0,200,240,0.1); border:1px solid var(--accent); color:var(--accent); padding:4px 12px; border-radius:4px; cursor:pointer; font-size:11px; transition:all 0.2s; margin-left:12px; }
+	.header .btn-help:hover { background:rgba(0,200,240,0.2); color:var(--bright); }
 </style>
 </head>
 <body>
@@ -130,18 +148,163 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
 
 <div class="main">
   <div class="header">
-    <h1 id="pageTitle">📊 系统总览</h1>
+    <h1 id="pageTitle">📊 系统总览</h1><button class="btn-help" onclick="toggleGlossary()" title="查看缩写与术语说明">? 术语说明</button>
     <div class="api-status" id="apiStatus">API: 检查中...</div>
   </div>
   <div class="content" id="content"></div>
 </div>
 
+<!-- Glossary Modal -->
+<div class="glossary-overlay hidden" id="glossaryOverlay" onclick="if(event.target===this)closeGlossary()">
+  <div class="glossary-modal">
+    <div class="gm-header">
+      <h2>术语与缩写说明</h2>
+      <button class="gm-close" onclick="closeGlossary()" title="关闭">&times;</button>
+    </div>
+    <div class="gm-body">
+
+      <div class="gm-section">
+        <h3>电力与能源</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">kW</span><span class="gm-desc">千瓦 — 功率单位，1 kW=1000瓦</span></div>
+          <div class="gm-item"><span class="gm-abbr">kWp</span><span class="gm-desc">千瓦峰值 — 光伏组件在标准测试条件(STC)下的额定最大输出功率</span></div>
+          <div class="gm-item"><span class="gm-abbr">kWh</span><span class="gm-desc">千瓦时(度) — 能量单位，1 kW功率持续1小时所消耗/产生的能量</span></div>
+          <div class="gm-item"><span class="gm-abbr">MW / MWh</span><span class="gm-desc">兆瓦(1000 kW) / 兆瓦时(1000 kWh)</span></div>
+          <div class="gm-item"><span class="gm-abbr">kVA</span><span class="gm-desc">千伏安 — 视在功率单位，变压器容量标称值(如2×1250 kVA)</span></div>
+          <div class="gm-item"><span class="gm-abbr">kVAR</span><span class="gm-desc">千乏 — 无功功率单位，SVG补偿容量</span></div>
+          <div class="gm-item"><span class="gm-abbr">W/m&sup2;</span><span class="gm-desc">瓦每平方米 — 太阳辐照度单位</span></div>
+          <div class="gm-item"><span class="gm-abbr">GHI</span><span class="gm-desc">Global Horizontal Irradiance — 水平面总太阳辐照度</span></div>
+          <div class="gm-item"><span class="gm-abbr">AC / DC</span><span class="gm-desc">交流电 / 直流电 — 光伏发电为DC，经逆变器转为AC并网</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>储能与电池</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">ESS</span><span class="gm-desc">Energy Storage System — 储能系统，本系统采用磷酸铁锂(LFP)电池</span></div>
+          <div class="gm-item"><span class="gm-abbr">SOC</span><span class="gm-desc">State of Charge — 荷电状态(%)，电池当前电量占总额定容量的百分比，运行范围10%~90%</span></div>
+          <div class="gm-item"><span class="gm-abbr">DOD</span><span class="gm-desc">Depth of Discharge — 放电深度(%)，电池已放出的电量占总额定容量的百分比</span></div>
+          <div class="gm-item"><span class="gm-abbr">PCS</span><span class="gm-desc">Power Conversion System — 储能变流器，控制电池充放电的AC/DC双向变换器</span></div>
+          <div class="gm-item"><span class="gm-abbr">BMS</span><span class="gm-desc">Battery Management System — 电池管理系统，监控电池电压/温度/SOC</span></div>
+          <div class="gm-item"><span class="gm-abbr">LFP</span><span class="gm-desc">Lithium Iron Phosphate — 磷酸铁锂电池，本系统默认储能电池类型</span></div>
+          <div class="gm-item"><span class="gm-abbr">充放电倍率</span><span class="gm-desc">0.5C — 电池以额定容量一半的功率充放电(2000kWh电池对应1000kW功率)</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>光伏发电</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">PV</span><span class="gm-desc">Photovoltaic — 光伏发电，利用半导体界面的光生伏特效应将光能转化为电能</span></div>
+          <div class="gm-item"><span class="gm-abbr">STC</span><span class="gm-desc">Standard Test Conditions — 标准测试条件(辐照1000W/m&sup2;，电池温度25&deg;C，AM1.5)</span></div>
+          <div class="gm-item"><span class="gm-abbr">NOCT</span><span class="gm-desc">Nominal Operating Cell Temperature — 标称工作电池温度，用于实际出力修正</span></div>
+          <div class="gm-item"><span class="gm-abbr">TOPCon</span><span class="gm-desc">Tunnel Oxide Passivated Contact — 隧穿氧化层钝化接触电池，高效光伏电池类型</span></div>
+          <div class="gm-item"><span class="gm-abbr">首年衰减</span><span class="gm-desc">光伏组件第一年输出功率衰减率，本系统默认2.0%，之后逐年0.5%</span></div>
+          <div class="gm-item"><span class="gm-abbr">等效利用小时</span><span class="gm-desc">年发电量(kWh) &divide; 装机容量(kWp)，衡量光伏资源利用效率</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>经济指标</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">NPC</span><span class="gm-desc">Net Present Cost — 净现值成本(万元)，全生命周期总成本折现到当前的价值</span></div>
+          <div class="gm-item"><span class="gm-abbr">LCOE</span><span class="gm-desc">Levelized Cost of Energy — 平准化度电成本(元/kWh)</span></div>
+          <div class="gm-item"><span class="gm-abbr">IRR</span><span class="gm-desc">Internal Rate of Return — 内部收益率(%)，使NPV=0的折现率</span></div>
+          <div class="gm-item"><span class="gm-abbr">PBP</span><span class="gm-desc">Payback Period — 投资回收期(年)，收回初始投资所需时间</span></div>
+          <div class="gm-item"><span class="gm-abbr">ROI</span><span class="gm-desc">Return on Investment — 投资回报率(%)</span></div>
+          <div class="gm-item"><span class="gm-abbr">BCR</span><span class="gm-desc">Benefit-Cost Ratio — 效益费用比，收益现值/成本现值</span></div>
+          <div class="gm-item"><span class="gm-abbr">CAPEX</span><span class="gm-desc">Capital Expenditure — 初始资本支出(设备购置+安装费用)</span></div>
+          <div class="gm-item"><span class="gm-abbr">NPV</span><span class="gm-desc">Net Present Value — 净现值，未来现金流折现减去初始投资</span></div>
+          <div class="gm-item"><span class="gm-abbr">CCER</span><span class="gm-desc">Chinese Certified Emission Reduction — 中国核证自愿减排量(元/tCO₂)</span></div>
+          <div class="gm-item"><span class="gm-abbr">CEA</span><span class="gm-desc">China Carbon Emission Allowance — 中国碳排放配额</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>算法与方法</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">PSO</span><span class="gm-desc">Particle Swarm Optimization — 粒子群优化算法，用于单目标容量优化</span></div>
+          <div class="gm-item"><span class="gm-abbr">GA</span><span class="gm-desc">Genetic Algorithm — 遗传算法，模拟自然选择和遗传机制的优化方法</span></div>
+          <div class="gm-item"><span class="gm-abbr">EGPSO</span><span class="gm-desc">Enhanced Genetic PSO — 增强型遗传粒子群混合优化算法</span></div>
+          <div class="gm-item"><span class="gm-abbr">NSGA-II</span><span class="gm-desc">Non-dominated Sorting Genetic Algorithm II — 非支配排序遗传算法，求解多目标Pareto前沿</span></div>
+          <div class="gm-item"><span class="gm-abbr">AHP</span><span class="gm-desc">Analytic Hierarchy Process — 层次分析法，多准则决策中确定权重</span></div>
+          <div class="gm-item"><span class="gm-abbr">TOPSIS</span><span class="gm-desc">Technique for Order Preference by Similarity to Ideal Solution — 逼近理想解排序法</span></div>
+          <div class="gm-item"><span class="gm-abbr">VIKOR</span><span class="gm-desc">VlseKriterijumska Optimizacija I Kompromisno Resenje — 多准则妥协解排序法</span></div>
+          <div class="gm-item"><span class="gm-abbr">GRA</span><span class="gm-desc">Grey Relational Analysis — 灰色关联度分析</span></div>
+          <div class="gm-item"><span class="gm-abbr">CRITIC</span><span class="gm-desc">Criteria Importance Through Intercriteria Correlation — 基于指标相关性的客观赋权法</span></div>
+          <div class="gm-item"><span class="gm-abbr">MC</span><span class="gm-desc">Monte Carlo — 蒙特卡罗方法，通过大量随机抽样模拟不确定性(充电行为等)</span></div>
+          <div class="gm-item"><span class="gm-abbr">ABM</span><span class="gm-desc">Agent-Based Model — 基于主体的建模，模拟建筑内人员行为产生负荷</span></div>
+          <div class="gm-item"><span class="gm-abbr">GMM</span><span class="gm-desc">Gaussian Mixture Model — 高斯混合模型，用于EV充电行为聚类</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>系统、调度与市场</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">EMS</span><span class="gm-desc">Energy Management System — 能量管理系统，优化调度光伏/储能/负荷</span></div>
+          <div class="gm-item"><span class="gm-abbr">SCADA</span><span class="gm-desc">Supervisory Control and Data Acquisition — 监控与数据采集系统</span></div>
+          <div class="gm-item"><span class="gm-abbr">SLD</span><span class="gm-desc">Single Line Diagram — 电气单线图，展示微网拓扑结构</span></div>
+          <div class="gm-item"><span class="gm-abbr">SVG</span><span class="gm-desc">Static Var Generator — 静止无功发生器，补偿无功功率改善电能质量</span></div>
+          <div class="gm-item"><span class="gm-abbr">TOU</span><span class="gm-desc">Time-of-Use — 分时电价，峰/平/谷不同时段的电费定价策略</span></div>
+          <div class="gm-item"><span class="gm-abbr">V2G</span><span class="gm-desc">Vehicle-to-Grid — 电动汽车向电网反向送电，利用EV电池参与电网调节</span></div>
+          <div class="gm-item"><span class="gm-abbr">DR</span><span class="gm-desc">Demand Response — 需求响应，电力用户根据价格信号或激励调整用电行为</span></div>
+          <div class="gm-item"><span class="gm-abbr">NEV / EV</span><span class="gm-desc">New Energy Vehicle / Electric Vehicle — 新能源汽车 / 电动汽车</span></div>
+          <div class="gm-item"><span class="gm-abbr">FCFS</span><span class="gm-desc">First Come First Served — 先到先服务，充电排队策略</span></div>
+          <div class="gm-item"><span class="gm-abbr">8760h调度</span><span class="gm-desc">全年逐时(8760小时)能量调度仿真，评估微网运行策略</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>统计与评估指标</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">P5~P95</span><span class="gm-desc">百分位数 — P50为中位数，P95表示95%场景下不超过该值(用于保守设计)</span></div>
+          <div class="gm-item"><span class="gm-abbr">SSR / 自洽率</span><span class="gm-desc">Self-Sufficiency Ratio — 微网自发自用电量占总负荷用电量的比例(%)</span></div>
+          <div class="gm-item"><span class="gm-abbr">LOLP</span><span class="gm-desc">Loss of Load Probability — 失负荷概率，供电不足的时间占比</span></div>
+          <div class="gm-item"><span class="gm-abbr">NMBE</span><span class="gm-desc">Normalized Mean Bias Error — 标准化平均偏差，模型校验指标</span></div>
+          <div class="gm-item"><span class="gm-abbr">CV-RMSE</span><span class="gm-desc">Coefficient of Variation of RMSE — 均方根误差变异系数，ASHRAE Guideline 14校验标准</span></div>
+          <div class="gm-item"><span class="gm-abbr">MTBF</span><span class="gm-desc">Mean Time Between Failures — 平均无故障时间(小时)</span></div>
+          <div class="gm-item"><span class="gm-abbr">MTTR</span><span class="gm-desc">Mean Time To Repair — 平均修复时间(小时)</span></div>
+          <div class="gm-item"><span class="gm-abbr">SOI</span><span class="gm-desc">综合评分指数 — 加权归一化后的多维度综合得分(0~1)</span></div>
+        </div>
+      </div>
+
+      <div class="gm-section">
+        <h3>关键数值速查</h3>
+        <div class="gm-grid">
+          <div class="gm-item"><span class="gm-abbr">默认PV容量</span><span class="gm-desc">1,231 kWp TOPCon双面组件</span></div>
+          <div class="gm-item"><span class="gm-abbr">默认ESS容量</span><span class="gm-desc">2,000 kWh LFP电池 (PCS: 1,000 kW)</span></div>
+          <div class="gm-item"><span class="gm-abbr">充电终端</span><span class="gm-desc">18台(16&times;120kW快充 + 2&times;480kW超充)</span></div>
+          <div class="gm-item"><span class="gm-abbr">变压器</span><span class="gm-desc">2&times;1,250 kVA 箱式变压器</span></div>
+          <div class="gm-item"><span class="gm-abbr">PV成本</span><span class="gm-desc">4,408 元/kWp (含EPC安装)</span></div>
+          <div class="gm-item"><span class="gm-abbr">电池成本</span><span class="gm-desc">1,100 元/kWh (LFP电芯)</span></div>
+          <div class="gm-item"><span class="gm-abbr">PCS成本</span><span class="gm-desc">200 元/kW</span></div>
+          <div class="gm-item"><span class="gm-abbr">碳排因子</span><span class="gm-desc">电网: 0.5703 tCO₂/MWh</span></div>
+          <div class="gm-item"><span class="gm-abbr">峰时电价</span><span class="gm-desc">夏季1.35 元/kWh (峰) / 0.38 元/kWh (谷)</span></div>
+          <div class="gm-item"><span class="gm-abbr">上网电价</span><span class="gm-desc">0.35 元/kWh (余电上网)</span></div>
+          <div class="gm-item"><span class="gm-abbr">SOC运行范围</span><span class="gm-desc">10%~90% (避免深度充放电损害电池寿命)</span></div>
+          <div class="gm-item"><span class="gm-abbr">仿真时间步长</span><span class="gm-desc">1小时(8760h调度) / 1分钟(SCADA Pro细粒度)</span></div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
 <script>
 // ==================== Global State ====================
 const API = 'http://127.0.0.1:8760';
 let DATA = { mc:null, opt:null, pareto:null, decision:null, config:null };
 let charts = {};
 let activeTab = 'overview';
+
+// ==================== Glossary Toggle ====================
+function toggleGlossary() {
+  const overlay = document.getElementById('glossaryOverlay');
+  if (overlay) overlay.classList.toggle('hidden');
+}
+function closeGlossary() {
+  const overlay = document.getElementById('glossaryOverlay');
+  if (overlay) overlay.classList.add('hidden');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeGlossary(); });
 
 // ==================== Navigation ====================
 document.querySelectorAll('#nav a').forEach(a => {

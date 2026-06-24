@@ -1,19 +1,19 @@
 """
-真实日历模块 — 2025年日历 + Markov天气序列
+真实日历模块 — 2025年日历 + PVGIS 8760h实测气象
 
-解决两个关键简化:
-1. 日类型不再随机分配, 而是基于2025年真实日历 (含中国法定节假日和调休)
-2. 天气序列使用Markov链生成, 具有时间持续性 (晴天更可能连续出现)
-
-v6.3: 研究数据集驱动的转移矩阵 + 二阶Markov近似 + 季节性修正 (文件24 §2.4)
+v6.7: PVGIS实测8760h逐时GHI+温度+风速替代Markov合成天气.
+  晴天概率不再是硬编码转移矩阵, 而是2020年真实气象数据.
 
 统一PVGenerator和MicrogridOptimizer共用同一份日历和天气序列.
 """
+import json
+import os
 import numpy as np
 from config import (
     MONTHLY_WEATHER_DAYS, get_season,
     WEATHER_TRANSITION_MATRIX, WEATHER_SEASONAL_PERSISTENCE,
     SECOND_ORDER_ALPHA,
+    TMY_GHI_CLEAR,
 )
 
 # 2025年1月1日 = 周三 (0=Mon, 6=Sun)
@@ -43,6 +43,122 @@ STATUTORY_HOLIDAY_DATES = [
 # 天气Markov链持续性参数 (0~1, 越高天气越持续)
 # v6.3: 保留作为回退值, 推荐使用transition_matrix模式
 WEATHER_PERSISTENCE = 0.65
+
+# v6.7: PVGIS数据路径
+_DATA_DIR = os.path.join(os.path.dirname(__file__), 'data')
+
+
+def _load_pvgis_hourly(location='wuhan'):
+    """加载PVGIS 8760h逐时实测数据
+
+    Returns
+    -------
+    dict with keys: hourly_ghi, hourly_temp, hourly_wind, hourly_count
+    或 None (文件不存在时)
+    """
+    fpath = os.path.join(_DATA_DIR, f'pvgis_tmy_{location}.json')
+    if not os.path.exists(fpath):
+        return None
+    with open(fpath, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return {
+        'hourly_ghi': np.array(data['hourly_ghi'], dtype=float),
+        'hourly_temp': np.array(data['hourly_temp'], dtype=float),
+        'hourly_wind': np.array(data['hourly_wind'], dtype=float),
+        'hourly_count': data.get('hourly_count', 8760),
+    }
+
+
+def _classify_weather_from_ghi(ghi_hourly, ghi_clear_hourly):
+    """从逐时GHI/晴空GHI比值分类天气类型
+
+    使用Kasten-Czeplak逆推: 云量 = 8 * ((1 - GHI/GHI_clear) / 0.75)^(1/3.4)
+    聚合到天级别: 取08-17时(日照时段)的平均云量分类.
+
+    Returns
+    -------
+    str: 'clear' | 'partly_cloudy' | 'cloudy' | 'overcast' | 'rain'
+    """
+    # 只评估08-17时的日照时段
+    daylight = slice(8, 18)
+    ghi_day = ghi_hourly[daylight]
+    ghi_clr = ghi_clear_hourly[daylight]
+
+    ratios = []
+    for g, gc in zip(ghi_day, ghi_clr):
+        if gc > 10:
+            ratios.append(np.clip(g / gc, 0.0, 1.0))
+
+    if not ratios:
+        return 'cloudy'
+
+    avg_ratio = np.mean(ratios)
+    if avg_ratio > 0.75:
+        return 'clear'
+    elif avg_ratio > 0.55:
+        return 'partly_cloudy'
+    elif avg_ratio > 0.30:
+        return 'cloudy'
+    elif avg_ratio > 0.12:
+        return 'overcast'
+    else:
+        return 'rain'
+
+
+def _utc_to_local_roll(arr_8760, utc_offset=8):
+    """将UTC时间数组滚动到本地时间 (UTC→UTC+8: 每个24h块内roll +8)"""
+    n_hours = len(arr_8760)
+    n_days = n_hours // 24
+    result = np.zeros_like(arr_8760)
+    for d in range(n_days):
+        day_utc = arr_8760[d * 24:(d + 1) * 24]
+        result[d * 24:(d + 1) * 24] = np.roll(day_utc, utc_offset)
+    return result
+
+
+def _build_weather_from_pvgis(hourly_ghi, hourly_count=8760):
+    """从PVGIS逐时GHI数据构建全年365天天气序列
+
+    PVGIS数据为UTC时间, 武汉为UTC+8, 需要将每天24h块内roll(+8).
+    然后取日照时段(08-17h)的GHI/晴空GHI比值,
+    按Kasten-Czeplak逆推云量分类为5种天气类型.
+
+    Parameters
+    ----------
+    hourly_ghi : np.ndarray (8760+,)
+    hourly_count : int
+
+    Returns
+    -------
+    weather_seq : list[str] (365,)
+    hourly_ghi_8760 : np.ndarray (8760,) — 本地时间
+    hourly_ghi_raw : np.ndarray — 原始UTC (前8760h)
+    """
+    n_days = 365
+    n_hours = n_days * 24  # 8760
+    # 截断到8760h
+    ghi_utc = hourly_ghi[:n_hours]
+    # UTC→本地时间 (UTC+8)
+    ghi_local = _utc_to_local_roll(ghi_utc, 8)
+
+    # 构建晴空GHI参考 (每月逐时, 本地时间)
+    ghi_clear_hourly = np.zeros(n_hours)
+    days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    day_start = 0
+    for month in range(1, 13):
+        ndays = days_in_month[month - 1]
+        ghi_clr_24 = np.array(TMY_GHI_CLEAR[month], dtype=float)
+        for d in range(ndays):
+            ghi_clear_hourly[(day_start + d) * 24:(day_start + d + 1) * 24] = ghi_clr_24
+        day_start += ndays
+
+    weather_seq = []
+    for d in range(n_days):
+        ghi_24 = ghi_local[d * 24:(d + 1) * 24]
+        ghi_clr_24 = ghi_clear_hourly[d * 24:(d + 1) * 24]
+        weather_seq.append(_classify_weather_from_ghi(ghi_24, ghi_clr_24))
+
+    return weather_seq, ghi_local, ghi_utc
 
 
 def _is_spring_festival(month, day):
@@ -255,18 +371,39 @@ class CalendarContext:
         ctx.day_of_week[day]      # 第day天是周几
     """
 
-    def __init__(self, seed=None, weather_persistence=None, use_transition_matrix=True):
+    def __init__(self, seed=None, weather_persistence=None, use_transition_matrix=True,
+                 pvgis_location='wuhan'):
         self.rng = np.random.RandomState(seed)
         self.persistence = (weather_persistence if weather_persistence is not None
                            else WEATHER_PERSISTENCE)
         self.use_transition_matrix = use_transition_matrix
+        self.pvgis_location = pvgis_location
 
         # 构建日历
         (self.day_types, self.day_of_week,
          self.month_of_day, self.day_of_month) = build_calendar()
 
-        # 构建天气序列 (Markov链)
-        self.weather_seq = self._build_weather()
+        # v6.7: 优先加载PVGIS 8760h实测数据, 回退Markov合成
+        pvgis = _load_pvgis_hourly(pvgis_location)
+        if pvgis is not None:
+            self._pvgis_ghi = pvgis['hourly_ghi']
+            self._pvgis_temp = pvgis['hourly_temp']
+            self._pvgis_wind = pvgis['hourly_wind']
+            self._pvgis_count = pvgis['hourly_count']
+            weather_seq, self.hourly_ghi, _ = _build_weather_from_pvgis(
+                self._pvgis_ghi, self._pvgis_count)
+            self.weather_seq = weather_seq
+            # v6.7: UTC→本地时间 (UTC+8), 截断到8760h
+            self.hourly_temp = _utc_to_local_roll(self._pvgis_temp[:8760], 8)
+            self.hourly_wind = _utc_to_local_roll(self._pvgis_wind[:8760], 8)
+            self._has_pvgis = True
+        else:
+            self._has_pvgis = False
+            self.hourly_ghi = None
+            self.hourly_temp = None
+            self.hourly_wind = None
+            # 旧版: Markov天气序列
+            self.weather_seq = self._build_weather()
 
         # 预计算每天的季节
         self.season_of_day = [get_season(self.month_of_day[d]) for d in range(365)]

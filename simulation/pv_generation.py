@@ -24,20 +24,34 @@ SEASON_REPRESENTATIVE_MONTH = {
 class PVGenerator:
     """光伏出力合成器
 
+    数据优先级: 外部TMY > config硬编码
+
     Parameters
     ----------
     pv_capacity_kwp : float
         光伏装机容量 (kWp)
     seed : int or None
-        随机种子 (仅在未传入calendar_ctx时使用)
     calendar_ctx : CalendarContext or None
-        统一日历上下文, 提供天气序列. 若为None则使用旧版随机shuffle模式.
+    tmy_data : dict or None
+        v6.6: 外部TMY数据, 格式为 load_pvgis_tmy() 的返回
+        包含 'TMY_GHI_CLEAR' 和 'TMY_HOURLY_TEMP' 两个12x24数组dict
+        若为None则使用config.py的硬编码值
     """
 
-    def __init__(self, pv_capacity_kwp=500, seed=None, calendar_ctx=None):
+    def __init__(self, pv_capacity_kwp=500, seed=None, calendar_ctx=None, tmy_data=None):
         self.pv_capacity = pv_capacity_kwp
         self.rng = np.random.RandomState(seed)
         self.calendar_ctx = calendar_ctx
+
+        # v6.6: 外部TMY数据优先
+        if tmy_data is not None:
+            self._ghi_clear = tmy_data.get('TMY_GHI_CLEAR', TMY_GHI_CLEAR)
+            self._temp = tmy_data.get('TMY_HOURLY_TEMP', TMY_HOURLY_TEMP)
+            self._source = tmy_data.get('source', 'external')
+        else:
+            self._ghi_clear = TMY_GHI_CLEAR
+            self._temp = TMY_HOURLY_TEMP
+            self._source = 'config_hardcoded'
 
         if calendar_ctx is not None:
             self.weather_seq = calendar_ctx.weather_seq
@@ -90,7 +104,8 @@ class PVGenerator:
         """
         return power * (1.0 + PV_TEMP_COEFF * (t_cell - PV_STC_TEMP))
 
-    def generate_daily_profile(self, season, weather_type, month=None, use_tmy=True):
+    def generate_daily_profile(self, season, weather_type, month=None, use_tmy=True,
+                                hourly_temp=None, hourly_ghi=None):
         """生成某一天的24h光伏出力 (kW), 含温度效应修正
 
         Parameters
@@ -103,34 +118,40 @@ class PVGenerator:
             月份(1-12). 若为None则使用季节代表月份.
         use_tmy : bool
             是否使用TMY逐时温度+GHI (默认True). False则回退到月均温+系数反推.
+        hourly_temp : np.ndarray or None
+            v6.7: 24h逐时温度(℃) from PVGIS, 优先于月均值.
+        hourly_ghi : np.ndarray or None
+            v6.7: 24h逐时GHI(W/m²) from PVGIS, 优先于系数合成.
         """
-        coeff = np.array(PV_COEFF[season])
-        weather_factor = WEATHER_COEFF.get(weather_type, 1.0)
-
-        # GHI: TMY真实数据 或 系数反推
-        if use_tmy and month is not None:
-            ghi_clear = np.array(TMY_GHI_CLEAR[month])
-            # 根据云量使用Kasten-Czeplak衰减
+        # v6.7: PVGIS逐时GHI优先
+        if hourly_ghi is not None and use_tmy:
+            ghi = np.array(hourly_ghi, dtype=float)
+            ideal_output = ghi / 1000.0 * self.pv_capacity
+        elif use_tmy and month is not None:
+            ghi_clear = np.array(self._ghi_clear[month])
             cloud_oktas_map = {'clear': 0, 'partly_cloudy': 3, 'cloudy': 5.5,
                               'overcast': 7.5, 'rain': 8}
             cloud_oktas = cloud_oktas_map.get(weather_type, 0)
             ghi = kasten_czeplak_ghi(ghi_clear, cloud_oktas)
             ideal_output = ghi / 1000.0 * self.pv_capacity
         else:
+            coeff = np.array(PV_COEFF[season])
+            weather_factor = WEATHER_COEFF.get(weather_type, 1.0)
             ideal_output = coeff * self.pv_capacity * weather_factor
             ghi = None
 
-        # 温度修正 (Sandia热模型)
-        if month is None:
-            month = SEASON_REPRESENTATIVE_MONTH.get(season, 4)
-
-        if use_tmy and month is not None:
-            ambient_temp = np.array(TMY_HOURLY_TEMP[month])
+        # v6.7: 逐时温度优先 (PVGIS实测 → Sandia热模型)
+        if hourly_temp is not None and use_tmy:
+            ambient_temp = np.array(hourly_temp, dtype=float)
+        elif use_tmy and month is not None:
+            ambient_temp = np.array(self._temp[month])
         else:
+            if month is None:
+                month = SEASON_REPRESENTATIVE_MONTH.get(season, 4)
             ambient_temp = MONTHLY_AMBIENT_TEMP.get(month, 20.0)
 
         t_cell = self._get_cell_temperature(
-            coeff * weather_factor if ghi is None else ghi / 1000.0,
+            ghi / 1000.0 if ghi is not None else np.array(PV_COEFF[season]) * WEATHER_COEFF.get(weather_type, 1.0),
             ambient_temp,
             ghi_array=ghi
         )
@@ -141,29 +162,35 @@ class PVGenerator:
         return temp_corrected * noise
 
     def generate_annual(self, use_tmy=True):
-        """生成8760h年度光伏出力序列 (含TMY温度+GHI效应)"""
+        """生成8760h年度光伏出力序列 (v6.7: PVGIS逐时GHI+温度)
+
+        优先使用calendar_ctx中的逐时GHI和温度,
+        回退到月度TMY剖面+Kasten-Czeplak天气修正.
+        """
         hourly = np.zeros(8760)
+
+        # v6.7: CalendarContext逐时数据
+        has_pvgis = (self.calendar_ctx is not None
+                     and getattr(self.calendar_ctx, '_has_pvgis', False))
 
         for day in range(365):
             month = self._day_to_month(day)
             season = get_season(month)
             weather = self.weather_seq[day]
-            profile = self.generate_daily_profile(season, weather, month=month, use_tmy=use_tmy)
+
+            if has_pvgis:
+                h_ghi = self.calendar_ctx.hourly_ghi[day * 24:(day + 1) * 24]
+                h_temp = self.calendar_ctx.hourly_temp[day * 24:(day + 1) * 24]
+                profile = self.generate_daily_profile(
+                    season, weather, month=month, use_tmy=True,
+                    hourly_temp=h_temp, hourly_ghi=h_ghi)
+            else:
+                profile = self.generate_daily_profile(
+                    season, weather, month=month, use_tmy=use_tmy)
+
             hourly[day * 24:(day + 1) * 24] = profile
 
         return hourly
-
-    def generate_typical_days(self):
-        """生成典型日光伏出力 (四季 × 晴天), 用于优化"""
-        profiles = {}
-        for season in ['spring', 'summer', 'autumn', 'winter']:
-            profiles[season] = {
-                'clear': self.generate_daily_profile(season, 'clear'),
-                'partly_cloudy': self.generate_daily_profile(season, 'partly_cloudy'),
-                'overcast': self.generate_daily_profile(season, 'overcast'),
-                'rain': self.generate_daily_profile(season, 'rain'),
-            }
-        return profiles
 
     @staticmethod
     def _day_to_month(day):
@@ -201,11 +228,20 @@ class PVGenerator:
 
 
 if __name__ == '__main__':
-    pv = PVGenerator(pv_capacity_kwp=500, seed=42)
+    from config import load_pvgis_tmy, TMY_GHI_CLEAR, TMY_HOURLY_TEMP
 
     print("=" * 60)
-    print("v6.3: TMY逐时温度+GHI模式 (文件24 §1.1-1.2)")
+    print("v6.6: PVGIS真实TMY vs config硬编码对比")
     print("=" * 60)
+
+    # 加载PVGIS数据
+    tmy_pvgis = load_pvgis_tmy('wuhan')
+    print(f"  TMY source: {tmy_pvgis['source']}")
+    print(f"  Annual GHI: {tmy_pvgis.get('annual_stats', {}).get('ghi_kwh_m2', 'N/A')} kWh/m2")
+    if tmy_pvgis.get('source') != 'config_hardcoded':
+        print(f"  PVGIS elevation: {tmy_pvgis['meta'].get('elevation_m', 'N/A')} m")
+
+    pv = PVGenerator(pv_capacity_kwp=500, seed=42, tmy_data=tmy_pvgis)
     annual_tmy = pv.generate_annual(use_tmy=True)
     metrics_tmy = pv.compute_annual_metrics(annual_tmy)
     print(f"年发电量: {metrics_tmy['annual_generation_kwh']:.0f} kWh")

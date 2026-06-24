@@ -48,7 +48,7 @@ def build_8760h_data(mc_scenarios, pv_cap=1231, ess_cap=2000, ess_pow=1000,
     opt.ess_capacity = ess_cap
     opt.ess_power = ess_pow
 
-    pv_coeff_seq, load_seq, tou_seq, seasons_seq = opt._build_8760h_sequence()
+    pv_coeff_seq, load_seq, tou_seq, seasons_seq, _ = opt._build_8760h_sequence()
 
     days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
 

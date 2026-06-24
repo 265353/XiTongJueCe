@@ -351,7 +351,7 @@ class RobustOptimizationFramework:
             不确定性场景数量 (≥2, 含标称和最恶劣).
         """
         # 获取标称8760h序列
-        pv_nominal, load_nominal, tou_seq, seasons = optimizer._build_8760h_sequence()
+        pv_nominal, load_nominal, tou_seq, seasons, _ = optimizer._build_8760h_sequence()
 
         # 生成不确定性场景集
         rng = np.random.RandomState(optimizer.rng.randint(0, 2**31 - 1))
@@ -565,12 +565,13 @@ def _evaluate_with_scenario(optimizer, pv_cap, ess_cap, ess_pow, pv_coeff_seq, l
     """
     # 保存原始方法
     original_build = optimizer._build_8760h_sequence
-    # 构建简单场景序列 (天气/TOU从原始方法获取, PV/负荷用场景数据)
-    _, _, tou_seq_orig, seasons_seq_orig = original_build()
+    # 构建简单场景序列 (天气/TOU/温度从原始方法获取, PV/负荷用场景数据)
+    _, _, tou_seq_orig, seasons_seq_orig, temp_seq_orig = original_build()
 
     def scenario_sequence():
         return (np.array(pv_coeff_seq), np.array(load_seq),
-                np.array(tou_seq_orig), list(seasons_seq_orig))
+                np.array(tou_seq_orig), list(seasons_seq_orig),
+                np.array(temp_seq_orig))
 
     optimizer._build_8760h_sequence = scenario_sequence
     try:
