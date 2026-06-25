@@ -1058,10 +1058,11 @@ async function renderSCADA() {
         <span style="font-size:9px;color:var(--bright);">23:59</span>
         <span id="spTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:44px;">12:00</span>
         <button class="btn btn-primary btn-sm" id="spPlayBtn" onclick="toggleSPPlay()">▶ 播放</button>
+        <button class="btn btn-outline btn-sm" id="spYearBtn" onclick="toggleSCADAView()" style="margin-left:4px;">📅 全年视图</button>
         <span style="font-size:9px;color:var(--accent2);margin-left:4px;" id="spInfo"></span>
       </div>
     </div>
-    <div class="row21" style="margin-bottom:12px;">
+    <div id="spRealTime" class="row21" style="margin-bottom:12px;">
       <div class="chart-box" style="min-height:480px;">
         <h3 style="display:flex;align-items:center;gap:4px;">
           <span style="font-size:12px;color:var(--accent);margin-right:6px;">细粒度可视化</span>
@@ -1083,8 +1084,119 @@ async function renderSCADA() {
       <div class="chart-box"><h3>分钟级功率流 (PV/负荷/ESS/电网)</h3><div class="chart-inner tall" id="spPowerFlowChart"></div></div>
       <div class="chart-box"><h3>负荷分项 (EV充电/建筑/站用电)</h3><div class="chart-inner tall" id="spLoadBreakChart"></div></div>
     </div>
+  </div>
+  <div id="spAnnual" style="display:none;">
+    <div class="metrics-row" id="spAnnualMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>📅 月度PV/负荷/网购电 (MWh)</h3><div class="chart-inner" id="spAnnualMonthlyChart"></div></div>
+      <div class="chart-box"><h3>📅 四季汇总</h3><div id="spAnnualSeasonTable" style="padding:8px;"></div></div>
+    </div>
+    <div class="chart-box"><h3>📅 全年自洽率日历 (365天)</h3><div class="chart-inner short" id="spAnnualCalendarChart"></div></div>
+  </div>
   `;
   setTimeout(() => { spMinute = 720; loadSPData(); }, 200);
+}
+
+let _spYearData = null, _spYearView = false;
+
+async function toggleSCADAView() {
+  _spYearView = !_spYearView;
+  const btn = document.getElementById('spYearBtn');
+  const rt = document.getElementById('spRealTime');
+  const an = document.getElementById('spAnnual');
+  if (_spYearView) {
+    btn.textContent = '🏭 实时视图'; btn.style.background = 'rgba(0,200,240,0.15)';
+    rt.style.display = 'none'; an.style.display = 'block';
+    if (!_spYearData) await loadSPAnnualData();
+  } else {
+    btn.textContent = '📅 全年视图'; btn.style.background = 'transparent';
+    rt.style.display = 'block'; an.style.display = 'none';
+  }
+}
+
+async function loadSPAnnualData() {
+  _spYearData = await fetchAPI('/api/simulate/dispatch-year-summary');
+  if (!_spYearData) {
+    document.getElementById('spAnnualMetrics').innerHTML = '<div style="color:#f08030;padding:20px;">全年数据暂不可用，请确认API已连接</div>';
+    return;
+  }
+  const yd = _spYearData;
+  // Metrics
+  document.getElementById('spAnnualMetrics').innerHTML =
+    metricCard('☀️ 年总光伏', (yd.totals.pv_gen/1000).toFixed(0)+' MWh', '年度发电量', '#f0a020') +
+    metricCard('⚡ 年总负荷', (yd.totals.load/1000).toFixed(0)+' MWh', '年度用电量', '#e8e8f0') +
+    metricCard('🔌 年网购电', (yd.totals.grid_import/1000).toFixed(0)+' MWh', '购电成本:'+(yd.totals.grid_cost/10000).toFixed(1)+'万元', '#e04050') +
+    metricCard('📊 年自洽率', (yd.self_sufficiency*100).toFixed(1)+'%', '光伏自发自用率', '#60d040') +
+    metricCard('📤 年上网电', (yd.totals.grid_export/1000).toFixed(0)+' MWh', '余电上网', '#30d0b0') +
+    metricCard('🌱 年碳减排', ((yd.totals.pv_gen-yd.totals.grid_export)/1000*0.5703).toFixed(0)+' tCO2', '估算', '#40e0a0');
+  drawSPAnnualMonthly(yd);
+  drawSPAnnualCalendar(yd);
+  drawSPAnnualSeasonTable(yd);
+}
+
+function drawSPAnnualMonthly(yd) {
+  const c = initChart('spAnnualMonthlyChart'); if (!c) return;
+  const mo = yd.monthly || {}, months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['光伏发电','总负荷','网购电','自洽率'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:60,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:[
+      {type:'value',name:'MWh',nameTextStyle:{color:'#e8e8f0'},axisLabel:{color:'#e8e8f0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      {type:'value',name:'%',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{show:false}}
+    ],
+    series:[
+      {name:'光伏发电',type:'bar',data:(mo.pv||Array(12).fill(0)).map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#f0a020',opacity:0.8},barWidth:14},
+      {name:'总负荷',type:'bar',data:(mo.load||Array(12).fill(0)).map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#e8e8f0',opacity:0.6},barWidth:14},
+      {name:'网购电',type:'bar',data:(mo.grid||Array(12).fill(0)).map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#e04050',opacity:0.7},barWidth:14},
+      {name:'自洽率',type:'line',data:(mo.ssr||Array(12).fill(0)).map(function(v){return (v*100).toFixed(1);}),yAxisIndex:1,lineStyle:{color:'#40e0a0',width:2.5},symbol:'circle',symbolSize:6}
+    ]
+  });
+}
+
+function drawSPAnnualCalendar(yd) {
+  const c = initChart('spAnnualCalendarChart'); if (!c) return;
+  const daily = yd.daily || [];
+  const ssrByDoy = {};
+  daily.forEach(function(d) { ssrByDoy[d.day] = d.ssr; });
+  let lastSSR = daily.length > 0 ? daily[0].ssr : 0;
+  const monthDays = [31,28,31,30,31,30,31,31,30,31,30,31];
+  const expanded = []; let doy = 0;
+  for (let m = 1; m <= 12; m++) {
+    for (let d2 = 1; d2 <= monthDays[m-1]; d2++) {
+      doy++;
+      if (ssrByDoy[doy] !== undefined) lastSSR = ssrByDoy[doy];
+      const mm = m < 10 ? '0'+m : ''+m;
+      const dd = d2 < 10 ? '0'+d2 : ''+d2;
+      expanded.push(['2025-'+mm+'-'+dd, lastSSR]);
+    }
+  }
+  c.setOption({
+    tooltip:{formatter:function(p){return p.value[0]+'<br/>SSR: '+(p.value[1]*100).toFixed(1)+'%';}},
+    visualMap:{min:0,max:1,inRange:{color:['#1a1020','#1a1a30','#1a3020','#306030','#50d060']},text:['高','低'],textStyle:{color:'#5a85a5'},top:5,right:10},
+    calendar:{range:'2025',cellSize:[16,14],splitLine:{lineStyle:{color:'#1a3a5a'}},itemStyle:{borderColor:'#1a3a5a',borderWidth:1},dayLabel:{color:'#5a85a5'},monthLabel:{color:'#8ab4d0'}},
+    series:[{type:'heatmap',coordinateSystem:'calendar',data:expanded}]
+  });
+}
+
+function drawSPAnnualSeasonTable(yd) {
+  const daily = yd.daily || [];
+  const seasons = {'spring':{n:0,pv:0,load:0,grid:0,ssr:0},'summer':{n:0,pv:0,load:0,grid:0,ssr:0},'autumn':{n:0,pv:0,load:0,grid:0,ssr:0},'winter':{n:0,pv:0,load:0,grid:0,ssr:0}};
+  daily.forEach(function(d) {
+    const s = d.season || 'spring';
+    if (seasons[s]) {
+      seasons[s].n++; seasons[s].pv += d.pv_gen; seasons[s].load += d.load;
+      seasons[s].grid += d.grid_import; seasons[s].ssr += d.ssr;
+    }
+  });
+  const labels = {spring:'🌸 春季',summer:'☀️ 夏季',autumn:'🍂 秋季',winter:'❄️ 冬季'};
+  let html = '<table class="data-mini-table"><tr><th>季节</th><th>天数</th><th>PV (MWh)</th><th>负荷 (MWh)</th><th>网购 (MWh)</th><th>均SSR</th></tr>';
+  Object.keys(labels).forEach(function(s) {
+    const v = seasons[s];
+    html += '<tr><td>'+labels[s]+'</td><td class="num">'+v.n+'</td><td class="num">'+(v.pv/1000).toFixed(0)+'</td><td class="num">'+(v.load/1000).toFixed(0)+'</td><td class="num">'+(v.grid/1000).toFixed(0)+'</td><td class="num'+(v.ssr/v.n>0.3?' ok':' warn')+'">'+(v.ssr/Math.max(v.n,1)*100).toFixed(1)+'%</td></tr>';
+  });
+  html += '</table>';
+  document.getElementById('spAnnualSeasonTable').innerHTML = html;
 }
 
 // ============================ POWER FLOW DETAIL ============================
@@ -1424,6 +1536,13 @@ async function renderESSData() {
       <div class="chart-box"><h3>电池衰减预测 (20年)</h3><div class="chart-inner" id="essDegradChart"></div></div>
     </div>
     <div class="chart-box"><h3>储能系统参数</h3><table class="data-table" id="essSpecTable"></table></div>
+    <div class="chart-box"><h3>📅 全年储能运行概览</h3><div id="essAnnualLoading" style="color:#5a8aaa;padding:8px;font-size:10px;">加载全年数据中...</div>
+      <div class="row2" style="margin-bottom:12px;">
+        <div class="chart-box"><h3>月度充放电吞吐量 (MWh)</h3><div class="chart-inner" id="essAnnualThroughputChart"></div></div>
+        <div class="chart-box"><h3>全年日终SOC日历</h3><div class="chart-inner short" id="essAnnualSOCChart"></div></div>
+      </div>
+      <div class="chart-box"><h3>日终SOC分布 (365天)</h3><div class="chart-inner short" id="essAnnualDistChart"></div></div>
+    </div>
   `;
 
   await loadSharedData();
@@ -1461,6 +1580,92 @@ async function renderESSData() {
     <tr><td>系统效率(RTE)</td><td class="num">~92%</td><td>含PCS损耗</td></tr>
     <tr><td>单位造价</td><td class="num">~1100 元/kWh</td><td>含电池+PCS+BMS+温控</td></tr>
   `;
+  // Load annual ESS data
+  loadESSAnnualData(essCap);
+}
+
+async function loadESSAnnualData(essCap) {
+  const yd = await fetchAPI('/api/simulate/dispatch-year-summary');
+  if (!yd || !yd.daily) {
+    document.getElementById('essAnnualLoading').innerHTML = '<span style="color:#f08030;">全年数据暂不可用</span>';
+    return;
+  }
+  document.getElementById('essAnnualLoading').style.display = 'none';
+  // Estimate daily ESS throughput from soc_end changes
+  const daily = yd.daily;
+  const monthlyThroughput = new Array(12).fill(0);
+  const monthlyDays = new Array(12).fill(0);
+  const socEnds = [];
+  daily.forEach(function(d, i) {
+    const m = (d.month || 1) - 1;
+    // Estimate throughput: abs(soc change) * capacity (approximation)
+    let throughput = 0;
+    if (i > 0) {
+      throughput = Math.abs(d.soc_end - daily[i-1].soc_end) * essCap;
+    }
+    monthlyThroughput[m] += throughput;
+    monthlyDays[m]++;
+    socEnds.push(d.soc_end);
+  });
+  // Draw charts
+  drawESSAnnualThroughput(monthlyThroughput);
+  drawESSAnnualSOC(yd);
+  drawESSAnnualDist(socEnds);
+}
+
+function drawESSAnnualThroughput(monthlyThroughput) {
+  const c = initChart('essAnnualThroughputChart'); if (!c) return;
+  const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'MWh',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:monthlyThroughput.map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#60d040',opacity:0.85},barWidth:22,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:9}}]
+  });
+}
+
+function drawESSAnnualSOC(yd) {
+  const c = initChart('essAnnualSOCChart'); if (!c) return;
+  const daily = yd.daily || [];
+  const socByDoy = {};
+  daily.forEach(function(d) { socByDoy[d.day] = d.soc_end; });
+  let lastSOC = daily.length > 0 ? daily[0].soc_end : 0.5;
+  const monthDays = [31,28,31,30,31,30,31,31,30,31,30,31];
+  const expanded = []; let doy = 0;
+  for (let m = 1; m <= 12; m++) {
+    for (let d2 = 1; d2 <= monthDays[m-1]; d2++) {
+      doy++;
+      if (socByDoy[doy] !== undefined) lastSOC = socByDoy[doy];
+      const mm = m < 10 ? '0'+m : ''+m;
+      const dd = d2 < 10 ? '0'+d2 : ''+d2;
+      expanded.push(['2025-'+mm+'-'+dd, lastSOC]);
+    }
+  }
+  c.setOption({
+    tooltip:{formatter:function(p){return p.value[0]+'<br/>日终SOC: '+(p.value[1]*100).toFixed(1)+'%';}},
+    visualMap:{min:0.1,max:0.9,inRange:{color:['#1a2020','#2a4a20','#408040','#60c050','#80e060']},text:['高','低'],textStyle:{color:'#5a85a5'},top:5,right:10},
+    calendar:{range:'2025',cellSize:[16,14],splitLine:{lineStyle:{color:'#1a3a5a'}},itemStyle:{borderColor:'#1a3a5a',borderWidth:1},dayLabel:{color:'#5a85a5'},monthLabel:{color:'#8ab4d0'}},
+    series:[{type:'heatmap',coordinateSystem:'calendar',data:expanded}]
+  });
+}
+
+function drawESSAnnualDist(socEnds) {
+  const c = initChart('essAnnualDistChart'); if (!c) return;
+  const bins = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0];
+  const counts = new Array(bins.length-1).fill(0);
+  socEnds.forEach(function(v) {
+    for (let i = 0; i < bins.length-1; i++) {
+      if (v >= bins[i] && v < bins[i+1]) { counts[i]++; break; }
+    }
+  });
+  const labels = bins.slice(0,-1).map(function(b,i) { return (b*100).toFixed(0)+'-'+(bins[i+1]*100).toFixed(0)+'%'; });
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:45},
+    xAxis:{type:'category',data:labels,axisLabel:{color:'#5a85a5',fontSize:8},name:'日终SOC区间',nameTextStyle:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'天数',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:counts,itemStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#60d040'},{offset:1,color:'#206020'}])},barWidth:'70%'}]
+  });
 }
 
 function drawESSDayChart(d) {
@@ -1512,6 +1717,12 @@ async function renderBuildingData() {
       <div class="chart-box"><h3>建筑负荷分项占比</h3><div class="chart-inner" id="bldPieChart"></div></div>
     </div>
     <div class="chart-box"><h3>建筑负荷参数</h3><table class="data-table" id="bldSpecTable"></table></div>
+    <div class="chart-box"><h3>📅 全年建筑负荷分析</h3><div id="bldAnnualLoading" style="color:#5a8aaa;padding:8px;font-size:10px;">加载全年数据中...</div>
+      <div class="row2" style="margin-bottom:12px;">
+        <div class="chart-box"><h3>月度总负荷 & PV对比 (MWh)</h3><div class="chart-inner" id="bldMonthlyChart"></div></div>
+        <div class="chart-box"><h3>负荷持续曲线 (365天降序)</h3><div class="chart-inner" id="bldDurationChart"></div></div>
+      </div>
+    </div>
   `;
 
   await loadSharedData();
@@ -1564,6 +1775,48 @@ async function renderBuildingData() {
     <tr><td rowspan="2" style="color:#4090d0;">照明 (v6.7)</td><td>照明功率密度</td><td class="num">12 W/m²</td><td>设计照度500lux</td></tr>
     <tr><td>自然采光</td><td class="num">GHI→照度转换</td><td>最低调光15%</td></tr>
   `;
+  // Load annual building data
+  loadBldAnnualData();
+}
+
+async function loadBldAnnualData() {
+  const yd = await fetchAPI('/api/simulate/dispatch-year-summary');
+  if (!yd || !yd.monthly) {
+    document.getElementById('bldAnnualLoading').innerHTML = '<span style="color:#f08030;">全年数据暂不可用</span>';
+    return;
+  }
+  document.getElementById('bldAnnualLoading').style.display = 'none';
+  drawBldMonthlyChart(yd);
+  drawBldDurationChart(yd);
+}
+
+function drawBldMonthlyChart(yd) {
+  const c = initChart('bldMonthlyChart'); if (!c) return;
+  const mo = yd.monthly || {}, months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  c.setOption({
+    tooltip:{trigger:'axis'}, legend:{data:['光伏发电','总负荷'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'MWh',nameTextStyle:{color:'#8090a0'},axisLabel:{color:'#8090a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'光伏发电',type:'bar',data:(mo.pv||Array(12).fill(0)).map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#f0a020',opacity:0.85},barWidth:14},
+      {name:'总负荷',type:'bar',data:(mo.load||Array(12).fill(0)).map(function(v){return (v/1000).toFixed(1);}),itemStyle:{color:'#8090a0',opacity:0.7},barWidth:14}
+    ]
+  });
+}
+
+function drawBldDurationChart(yd) {
+  const c = initChart('bldDurationChart'); if (!c) return;
+  const daily = yd.daily || [];
+  const loads = daily.map(function(d){return d.load;}).sort(function(a,b){return b-a;});
+  const n = loads.length;
+  c.setOption({
+    tooltip:{trigger:'axis',formatter:function(p){return '第'+p.value[0]+'天<br/>负荷: '+(p.value[1]/1000).toFixed(0)+' MWh';}},
+    grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'value',name:'天数排名',nameTextStyle:{color:'#5a85a5',fontSize:9},axisLabel:{color:'#5a85a5',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    yAxis:{type:'value',name:'MWh/天',nameTextStyle:{color:'#8090a0'},axisLabel:{color:'#8090a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'line',data:loads.map(function(v,i){return [i+1, (v/1000).toFixed(1)];}),smooth:true,lineStyle:{color:'#f08030',width:2},areaStyle:{color:'rgba(240,128,48,0.1)'},symbol:'none'}]
+  });
 }
 
 // ============================ CHARGING DATA VIEW ============================
@@ -1590,6 +1843,12 @@ async function renderChargingData() {
       <div class="chart-box"><h3>⏱️ 充电时长分布 (CC-CV模型)</h3><div class="chart-inner short" id="chgDurChart"></div></div>
     </div>
     <div class="chart-box" style="margin-bottom:12px;"><h3>📋 模型参数 & 数据源 <span class="data-badge">可点击查看详情</span></h3><table class="data-table clickable" id="chgSpecTable"></table></div>
+    <div class="chart-box"><h3>📅 全年充电能量构成 <span class="data-badge warn">基于MC统计估算</span></h3><div id="chgAnnualLoading" style="color:#5a8aaa;padding:8px;font-size:10px;">加载全年数据中...</div>
+      <div class="row2" style="margin-bottom:12px;">
+        <div class="chart-box"><h3>月度EV充电能量估算 (MWh)</h3><div class="chart-inner" id="chgAnnualMonthlyChart"></div></div>
+        <div class="chart-box"><h3>日型贡献占比 (年度充电能量)</h3><div class="chart-inner" id="chgAnnualDayTypeChart"></div></div>
+      </div>
+    </div>
   `;
 
   const [cccv, traffic, vehicles] = await Promise.all([
@@ -1655,6 +1914,69 @@ async function renderChargingData() {
     <tr><td>快充效率</td><td class="num">${cccv?cccv.efficiency:'93%'}</td><td>GB/T 18487.1</td></tr>
     <tr><td>V2G双向供电</td><td class="num">2台试点</td><td>60kW V2G桩</td></tr>
   `;
+  // Load annual charging data
+  loadChgAnnualData();
+}
+
+async function loadChgAnnualData() {
+  if (!_cache.mc) await loadSharedData();
+  const mc = _cache.mc;
+  if (!mc) {
+    document.getElementById('chgAnnualLoading').innerHTML = '<span style="color:#f08030;">MC数据暂不可用</span>';
+    return;
+  }
+  document.getElementById('chgAnnualLoading').style.display = 'none';
+  drawChgAnnualMonthly(mc);
+  drawChgAnnualDayType(mc);
+}
+
+function drawChgAnnualMonthly(mc) {
+  const c = initChart('chgAnnualMonthlyChart'); if (!c) return;
+  const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const monthFactors = [0.88,0.80,1.00,1.03,1.15,1.02,1.08,1.08,1.02,1.20,0.97,0.92];
+  // day-type weights: workday=250, weekend=104, holiday=11 per year
+  const dts = ['workday','weekend','holiday','spring_festival'];
+  const dtWeights = {workday:250, weekend:104, holiday:10, spring_festival:1};
+  // Get daily energy per day-type
+  const dtEnergy = {};
+  dts.forEach(function(dt) {
+    dtEnergy[dt] = mc[dt] ? (mc[dt].daily_energy_mean || 0) : 0;
+  });
+  const data = months.map(function(_, i) {
+    let total = 0;
+    // Approximate: distribute day types across months, weight by monthly factor
+    Object.keys(dtWeights).forEach(function(dt) {
+      total += dtEnergy[dt] * dtWeights[dt] / 12 * monthFactors[i];
+    });
+    return (total / 1000).toFixed(1); // MWh
+  });
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'MWh/月',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:data,itemStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#e04050'},{offset:1,color:'#801020'}])},barWidth:22,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:9}}]
+  });
+}
+
+function drawChgAnnualDayType(mc) {
+  const c = initChart('chgAnnualDayTypeChart'); if (!c) return;
+  const dts = ['workday','weekend','holiday','spring_festival'];
+  const labels = ['工作日','双休日','节假日','春运'];
+  const weights = {workday:250, weekend:104, holiday:10, spring_festival:1};
+  const data = dts.map(function(dt) {
+    const energy = mc[dt] ? (mc[dt].daily_energy_mean || 0) : 0;
+    return {name:labels[dts.indexOf(dt)], value: (energy * weights[dt] / 1000).toFixed(1)};
+  });
+  const pieColors = {workday:'#4090d0', weekend:'#60d040', holiday:'#f08030', spring_festival:'#e04050'};
+  c.setOption({
+    tooltip:{formatter:'{b}: {c} MWh ({d}%)'},
+    legend:{textStyle:{color:'#5a85a5',fontSize:9},orient:'vertical',right:5,top:10},
+    series:[{type:'pie',radius:['35%','65%'],center:['40%','50%'],
+      data:data.map(function(d,i){return {name:d.name,value:d.value,itemStyle:{color:pieColors[dts[i]]}};}),
+      label:{color:'#8ab4d0',fontSize:9,formatter:'{b}\n{d}%'}
+    }]
+  });
 }
 
 // ---- CC-CV功率曲线 ----
@@ -2684,8 +3006,70 @@ async function renderChargingLive() {
     <div class="chart-box" style="min-height:420px;">
       <canvas id="clCanvas" style="width:100%;height:400px;border-radius:6px;"></canvas>
     </div>
+    <div class="chart-box"><h3>📅 全年充电统计 <span class="data-badge warn">基于MC统计估算</span></h3><div id="clAnnualLoading" style="color:#5a8aaa;padding:8px;font-size:10px;">加载全年数据中...</div>
+      <div class="row2" style="margin-bottom:12px;">
+        <div class="chart-box"><h3>月度充电能量估算 (MWh)</h3><div class="chart-inner" id="clAnnualMonthlyChart"></div></div>
+        <div class="chart-box"><h3>繁忙时段分布 (加权全年)</h3><div class="chart-inner" id="clBusyHourChart"></div></div>
+      </div>
+    </div>
   `;
-  setTimeout(function() { loadChargingLive(); }, 200);
+  setTimeout(function() { loadChargingLive(); loadCLAnnualData(); }, 200);
+}
+
+async function loadCLAnnualData() {
+  if (!_cache.mc) await loadSharedData();
+  const mc = _cache.mc;
+  if (!mc) {
+    document.getElementById('clAnnualLoading').innerHTML = '<span style="color:#f08030;">MC数据暂不可用</span>';
+    return;
+  }
+  document.getElementById('clAnnualLoading').style.display = 'none';
+  drawCLAnnualMonthly(mc);
+  drawCLBusyHour(mc);
+}
+
+function drawCLAnnualMonthly(mc) {
+  const c = initChart('clAnnualMonthlyChart'); if (!c) return;
+  const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+  const monthFactors = [0.88,0.80,1.00,1.03,1.15,1.02,1.08,1.08,1.02,1.20,0.97,0.92];
+  const dtWeights = {workday:250, weekend:104, holiday:10, spring_festival:1};
+  const data = months.map(function(_, i) {
+    let total = 0;
+    Object.keys(dtWeights).forEach(function(dt) {
+      const energy = mc[dt] ? (mc[dt].daily_energy_mean || 0) : 0;
+      total += energy * dtWeights[dt] / 12 * monthFactors[i];
+    });
+    return (total / 1000).toFixed(1);
+  });
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'MWh/月',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:data,itemStyle:{color: new echarts.graphic.LinearGradient(0,0,0,1,[{offset:0,color:'#60d040'},{offset:1,color:'#205020'}])},barWidth:22,
+      label:{show:true,position:'top',color:'#8ab4d0',fontSize:9}}]
+  });
+}
+
+function drawCLBusyHour(mc) {
+  const c = initChart('clBusyHourChart'); if (!c) return;
+  const dtWeights = {workday:250, weekend:104, holiday:10, spring_festival:1};
+  // Aggregate hourly profiles weighted by day-type frequency
+  const hourlyTotal = new Array(24).fill(0);
+  Object.keys(dtWeights).forEach(function(dt) {
+    const p50 = mc[dt] ? (mc[dt].hourly_p50 || []) : [];
+    const weight = dtWeights[dt];
+    p50.forEach(function(v, h) {
+      hourlyTotal[h] += v * weight;
+    });
+  });
+  const maxVal = Math.max.apply(null, hourlyTotal);
+  const hours = Array.from({length:24}, function(_, i) { return i+':00'; });
+  c.setOption({
+    tooltip:{trigger:'axis'}, grid:{top:15,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:hours,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'加权功率(kW)',nameTextStyle:{color:'#f08030'},axisLabel:{color:'#f08030',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[{type:'bar',data:hourlyTotal.map(function(v){return (v/365).toFixed(0);}),itemStyle:{color: '#f08030',opacity:0.8},barWidth:14}]
+  });
 }
 
 // ============================ TOPOLOGY COMPARISON (v8.0) ============================
