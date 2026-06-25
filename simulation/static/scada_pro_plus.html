@@ -114,6 +114,44 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
 ::-webkit-scrollbar-track { background:transparent; }
 ::-webkit-scrollbar-thumb { background:#1a3a5a; border-radius:3px; }
 @media(max-width:1200px) { .row2,.row21,.row3 { grid-template-columns:1fr; } }
+.sld-dashboard { display:flex; flex-direction:column; gap:8px; font-size:11px; }
+.sld-row { display:flex; gap:8px; align-items:stretch; }
+.sld-grid-src { display:flex; align-items:center; gap:12px; padding:6px 12px;
+  background:rgba(240,180,32,0.06); border:1px solid rgba(240,180,32,0.25); border-radius:6px; }
+.sld-grid-label { font-weight:700; font-size:12px; color:#e0a020; white-space:nowrap; }
+.sld-grid-info { font-size:10px; color:#90a8b0; }
+.sld-line-v { width:2px; min-height:18px; background:#e0a020; margin:0 auto; border-radius:1px; }
+.sld-transformer { display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 16px;
+  background:rgba(64,128,192,0.06); border:1px solid rgba(64,128,192,0.25); border-radius:6px; }
+.sld-tf-name { font-weight:700; font-size:13px; color:#4890c0; }
+.sld-tf-spec { font-size:9px; color:#6090b0; text-align:center; line-height:1.4; }
+.sld-busbar { display:flex; align-items:center; gap:10px; padding:5px 14px;
+  background:rgba(160,160,160,0.05); border-top:2px solid #707070; border-bottom:2px solid #707070; }
+.sld-bus-label { font-weight:700; font-size:10px; color:#a0a0a0; white-space:nowrap; }
+.sld-bus-phase { display:flex; flex:1; gap:4px; margin-left:8px; }
+.sld-bus-phase span { flex:1; height:1px; background:#3a3a3a; }
+.sld-feeder { flex:1; min-width:140px; display:flex; flex-direction:column; gap:5px;
+  background:rgba(8,14,22,0.9); border:1px solid var(--border); border-radius:6px; padding:8px 10px; }
+.sld-feeder-label { font-weight:700; font-size:11px; text-align:center; }
+.sld-feeder-value { font-size:14px; font-weight:700; text-align:center; }
+.sld-feeder-sub { font-size:9px; text-align:center; color:#90a8b8; line-height:1.4; }
+.sld-feeder-detail { font-size:8px; color:#607080; text-align:center; line-height:1.3;
+  border-top:1px solid rgba(26,58,90,0.4); padding-top:4px; }
+.sld-soc-bar { width:100%; height:10px; background:#0a1624; border:1px solid #2a5080; border-radius:5px; overflow:hidden; }
+.sld-soc-fill { height:100%; border-radius:5px; background:linear-gradient(90deg,#e04050,#f0a020 45%,#50d048); }
+.sld-pile-grid { display:grid; grid-template-columns:repeat(6,1fr); grid-template-rows:repeat(3,1fr); gap:1.5px; }
+.sld-pile-dot { aspect-ratio:1; border-radius:2px; }
+.sld-pile-dot.on { background:#e04050; }
+.sld-pile-dot.off { background:#1a1c1c; }
+.sld-zone-row { display:flex; gap:2px; }
+.sld-zone-chip { padding:1px 4px; border-radius:3px; font-size:8px; text-align:center; }
+.sld-status-bar { display:flex; gap:6px; padding:8px 12px;
+  background:rgba(6,12,20,0.97); border-top:1px solid #1a2a3a; border-radius:0 0 6px 6px; }
+.sld-status-item { flex:1; text-align:center; }
+.sld-status-label { font-size:8px; color:#607080; }
+.sld-status-value { font-size:10px; font-weight:700; font-family:monospace; }
+.sld-arrow-left { color:#e04050; font-size:10px; }
+.sld-arrow-right { color:#38c0c0; font-size:10px; }
 .loading { text-align:center; padding:40px; color:#4a7595; }
 .spinner { display:inline-block; width:24px; height:24px; border:2px solid var(--border);
   border-top-color:var(--accent); border-radius:50%; animation:spin 0.8s linear infinite; }
@@ -162,15 +200,20 @@ body { background:var(--bg); color:var(--text); font-family:'Microsoft YaHei','S
   <nav id="nav">
     <div class="cat">实时监控</div>
     <a data-tab="scada" class="active"><span class="icon">🏭</span>SCADA 细粒度监控</a>
+    <a data-tab="charging-live"><span class="icon">🚗</span>充电站实景仿真</a>
     <a data-tab="powerflow"><span class="icon">⚡</span>分钟级功率流</a>
-    <div class="cat">数据看板</div>
-    <a data-tab="pv-data"><span class="icon">☀️</span>光伏发电数据</a>
-    <a data-tab="ess-data"><span class="icon">🔋</span>储能系统数据</a>
-    <a data-tab="building-data"><span class="icon">🏠</span>建筑负荷数据</a>
-    <a data-tab="charging-data"><span class="icon">🚗</span>充电站数据</a>
+    <div class="cat">物理模型看板</div>
+    <a data-tab="pv-data"><span class="icon">☀️</span>光伏发电模型</a>
+    <a data-tab="ess-data"><span class="icon">🔋</span>储能系统模型</a>
+    <a data-tab="building-data"><span class="icon">🏠</span>建筑负荷模型</a>
+    <a data-tab="charging-data"><span class="icon">🔌</span>充电行为模型</a>
+    <a data-tab="topology"><span class="icon">🔗</span>拓扑架构对比</a>
     <div class="cat">优化引擎</div>
     <a data-tab="optimization"><span class="icon">🎯</span>优化方法选择</a>
     <a data-tab="opt-results"><span class="icon">📈</span>优化结果对比</a>
+    <div class="cat">高级分析</div>
+    <a data-tab="v2g-dr"><span class="icon">🔄</span>V2G + 需求响应</a>
+    <a data-tab="scenario"><span class="icon">📅</span>场景演化分析</a>
     <div class="cat">决策分析</div>
     <a data-tab="economic"><span class="icon">💰</span>经济分析</a>
     <a data-tab="decision"><span class="icon">🎲</span>决策框架</a>
@@ -445,10 +488,20 @@ function roundRect(ctx, x, y, w, h, r) {
 // ============================ SCADA PRO ============================
 function switchSPViz(viz) {
   spViz = viz;
-  document.querySelectorAll('.viz-tab-btn').forEach(b => b.classList.remove('active'));
-  const btn = document.querySelector(`.viz-tab-btn[data-viz="${viz}"]`);
+  document.querySelectorAll('.viz-tab-btn').forEach(function(b){b.classList.remove('active');});
+  var btn = document.querySelector('.viz-tab-btn[data-viz="'+viz+'"]');
   if (btn) btn.classList.add('active');
-  if (spData) drawSPMainCanvas();
+  var sldDiv = document.getElementById('spSldHTML');
+  var canvas = document.getElementById('spMainCanvas');
+  if (viz === 'sld') {
+    if (sldDiv) sldDiv.style.display = 'block';
+    if (canvas) canvas.style.display = 'none';
+    if (spData) updateSLDHTML();
+  } else {
+    if (sldDiv) sldDiv.style.display = 'none';
+    if (canvas) canvas.style.display = 'block';
+    if (spData) drawSPMainCanvas();
+  }
 }
 
 async function loadSPData() {
@@ -494,11 +547,12 @@ function updateSCADA(minuteOfDay) {
     metricCard('🚗 充电桩', snap.ev_active.toFixed(0)+' 辆', '排队:'+snap.ev_waiting.toFixed(0)+' 桩:'+cfg.total_piles, '#f06878') +
     metricCard('📈 净负荷', net.toFixed(0)+' kW', net>0?'余电上网':'电网取电', net>0?'#30d0b0':'#e04050');
 
-  drawSPMainCanvas();
+  if (spViz === 'sld') updateSLDHTML(); else drawSPMainCanvas();
   drawSPCharts();
 }
 
 function drawSPMainCanvas() {
+  if (spViz === 'sld') return; // SLD renders via HTML, not canvas
   const canvas = document.getElementById('spMainCanvas');
   if (!canvas || !spData) return;
   const w = canvas.width = canvas.clientWidth;
@@ -518,67 +572,143 @@ function drawSPMainCanvas() {
   }
 }
 
-function drawSLD(ctx, w, h, snap, cfg) {
-  const isDay = snap.ghi > 50;
-  ctx.fillStyle = isDay ? '#0a1628' : '#050d18';
-  ctx.fillRect(0, 0, w, h);
-  const cx = w / 2, socPct = snap.soc * 100;
-  ctx.fillStyle = '#142840'; ctx.strokeStyle = '#3080b0'; ctx.lineWidth = 1.5;
-  roundRect(ctx, cx - 90, 10, 180, 22, 5); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#d8ecf8'; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
-  ctx.fillText('大电网 10kV', cx, 26);
-  ctx.fillStyle = '#0f2038'; ctx.strokeStyle = '#4080b0'; ctx.lineWidth = 1.5;
-  roundRect(ctx, cx - 70, 38, 140, 26, 5); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#c0ddf0'; ctx.font = 'bold 9px "Microsoft YaHei"'; ctx.fillText('箱变 2×1250kVA', cx, 54);
-  ctx.fillStyle = '#6090b0'; ctx.font = '7px "Microsoft YaHei"'; ctx.fillText('Dyn11 10/0.4kV', cx, 62);
-  ctx.fillStyle = '#b0b0b0'; ctx.strokeStyle = '#808080'; ctx.lineWidth = 1;
-  roundRect(ctx, 15, 70, w - 30, 12, 3); ctx.fill(); ctx.stroke();
-  ctx.fillStyle = '#0a1628'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.fillText('400V AC 母线', cx, 79);
-  ctx.lineWidth = 2.5; ctx.strokeStyle = '#a0b0c0';
-  ctx.beginPath(); ctx.moveTo(cx, 64); ctx.lineTo(cx, 70); ctx.stroke();
-  ctx.strokeStyle = '#60a0c0';
-  ctx.beginPath(); ctx.moveTo(cx, 32); ctx.lineTo(cx, 38); ctx.stroke();
+function updateSLDHTML() {
+  if (!spData) return;
+  var cfg = spData.config;
+  var mIdx = Math.min(Math.floor(spMinute / cfg.sample_interval_min), spData.sampled_minutes.length - 1);
+  var snap = spData.sampled_minutes[mIdx];
+  if (!snap) return;
 
-  const comps = [
-    { x:15, w:(w-40)/4, label:'☀ 光伏', val:snap.pv_kw.toFixed(0)+'kW', sub:'GHI:'+snap.ghi.toFixed(0), color:'#f0a020', bg:'#0c1808' },
-    { x:15+(w-40)/4+5, w:(w-40)/4, label:'🔋 储能', val:'SOC '+(snap.soc*100).toFixed(0)+'%', sub:(snap.ess_charge_kw>2?'充'+snap.ess_charge_kw.toFixed(0):snap.ess_discharge_kw>2?'放'+snap.ess_discharge_kw.toFixed(0):'待机')+'kW', color:'#4090d0', bg:'#081220' },
-    { x:15+2*((w-40)/4+5), w:(w-40)/4, label:'⚡ 充电', val:snap.ev_total_kw.toFixed(0)+'kW', sub:snap.ev_active.toFixed(0)+'/'+cfg.total_piles+' 在用', color:'#e04050', bg:'#100a0c' },
-    { x:15+3*((w-40)/4+5), w:(w-40)/4, label:'🏠 建筑', val:snap.bldg_total_kw.toFixed(0)+'kW', sub:'空调'+(snap.bldg_components?.['空调']||0).toFixed(0)+'kW', color:'#8090a0', bg:'#101218' },
-  ];
-  comps.forEach(cp => {
-    const alpha = cp.label.includes('光伏') ? (snap.pv_kw > 5 ? 1 : 0.3) : 1;
-    ctx.globalAlpha = alpha;
-    ctx.fillStyle = cp.bg; ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
-    roundRect(ctx, cp.x, 92, cp.w, 100, 6); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = cp.color; ctx.font = 'bold 11px "Microsoft YaHei"'; ctx.textAlign = 'center';
-    ctx.fillText(cp.label, cp.x+cp.w/2, 118);
-    ctx.font = '10px "Microsoft YaHei"'; ctx.fillStyle = '#d0e0f0'; ctx.fillText(cp.val, cp.x+cp.w/2, 138);
-    ctx.font = '8px "Microsoft YaHei"'; ctx.fillStyle = '#7a9ab0'; ctx.fillText(cp.sub, cp.x+cp.w/2, 155);
-    ctx.globalAlpha = 1;
-  });
+  var pvCap = cfg.pv_cap_kwp || 1231;
+  var essCap = cfg.ess_cap_kwh || 2000;
+  var essPow = cfg.ess_pow_kw || 1000;
+  var totalPiles = cfg.total_piles || 18;
+  var gridImp = snap.grid_import_kw || 0;
+  var gridExp = snap.grid_export_kw || 0;
+  var soc = snap.soc || 0.5;
+  var essCh = snap.ess_charge_kw || 0;
+  var essDis = snap.ess_discharge_kw || 0;
+  var essActive = essCh > 2;
+  var essDisActive = essDis > 2;
+  var pvOn = snap.pv_kw > 5;
+  var evOn = snap.ev_total_kw > 10;
+  var bc = snap.bldg_components || {};
+  var netLoad = snap.pv_kw - snap.load_total_kw;
+  var tfLoad = (Math.max(snap.load_total_kw, snap.pv_kw) / 2500 * 100).toFixed(0);
+  var socPct = (soc * 100).toFixed(1);
 
-  const essX = 15+(w-40)/4+5, essW = (w-40)/4;
-  ctx.fillStyle = '#0a1624'; ctx.strokeStyle = '#3060a0'; ctx.lineWidth = 0.8;
-  roundRect(ctx, essX+8, 168, essW-16, 10, 5); ctx.fill(); ctx.stroke();
-  const grad = ctx.createLinearGradient(essX+8, 0, essX+8+essW-16, 0);
-  grad.addColorStop(0, '#e04050'); grad.addColorStop(0.5, '#f0a020'); grad.addColorStop(1, '#60d040');
-  ctx.fillStyle = grad;
-  roundRect(ctx, essX+8, 168, (essW-16)*socPct/100, 10, 5); ctx.fill();
+  var div = document.getElementById('spSldHTML');
+  if (!div) return;
 
-  comps.forEach(cp => {
-    ctx.strokeStyle = cp.color; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(cp.x+cp.w/2, 82); ctx.lineTo(cp.x+cp.w/2, 92); ctx.stroke();
-  });
-  if (snap.pv_kw > 5) { ctx.fillStyle = '#f0a020'; ctx.beginPath(); ctx.arc(comps[0].x+comps[0].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
-  const essFlow = snap.ess_charge_kw > 2 ? '#4090d0' : snap.ess_discharge_kw > 2 ? '#60d040' : null;
-  if (essFlow) { ctx.fillStyle = essFlow; ctx.beginPath(); ctx.arc(comps[1].x+comps[1].w/2, 87, 5, 0, Math.PI*2); ctx.fill(); }
-  if (snap.grid_import_kw > 2) { ctx.fillStyle = '#e04050'; ctx.beginPath(); ctx.arc(cx, 67, 5, 0, Math.PI*2); ctx.fill(); }
-  if (snap.grid_export_kw > 2) { ctx.fillStyle = '#30d0b0'; ctx.beginPath(); ctx.arc(cx, 74, 5, 0, Math.PI*2); ctx.fill(); }
+  div.innerHTML =
+  '<div class="sld-dashboard">'+
 
-  ctx.fillStyle = '#5a8aaa'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'right';
-  ctx.fillText(`PV:${snap.pv_kw.toFixed(0)}kW · Load:${snap.load_total_kw.toFixed(0)}kW · SOC:${(snap.soc*100).toFixed(1)}%`, w-12, h-8);
+    // ── ROW 1: GRID SOURCE ──
+    '<div class="sld-grid-src">'+
+      '<span class="sld-grid-label">&#9889; 大电网 AC 10kV</span>'+
+      '<span class="sld-grid-info">短路容量 300 MVA</span>'+
+      '<span style="flex:1;"></span>'+
+      (gridImp > 5
+        ? '<span class="sld-arrow-left">&#9664; 购电 '+gridImp.toFixed(0)+' kW</span>'
+        : (gridExp > 5
+          ? '<span style="color:#38c0c0;font-size:10px;">上网 '+gridExp.toFixed(0)+' kW &#9654;</span>'
+          : '<span style="color:#607080;font-size:10px;">待机</span>'))+
+    '</div>'+
+
+    // ── VERTICAL CONNECTOR ──
+    '<div class="sld-line-v" style="background:linear-gradient(180deg,#e0a020,#4890c0);"></div>'+
+
+    // ── ROW 2: TRANSFORMER ──
+    '<div class="sld-transformer">'+
+      '<span class="sld-tf-name">T1  箱式变压器</span>'+
+      '<span class="sld-tf-spec">Dyn11 &nbsp; 10kV / 0.4kV &nbsp; 2×1250 kVA &nbsp; Uk%=6 &nbsp; IP65</span>'+
+    '</div>'+
+
+    // ── VERTICAL CONNECTOR ──
+    '<div class="sld-line-v" style="background:linear-gradient(180deg,#4890c0,#707070);"></div>'+
+
+    // ── ROW 3: 400V BUSBAR ──
+    '<div class="sld-busbar">'+
+      '<span class="sld-bus-label">400V AC 三相五线</span>'+
+      '<span style="font-size:9px;color:#707080;">额定 2500A</span>'+
+      '<div class="sld-bus-phase"><span></span><span></span><span></span></div>'+
+    '</div>'+
+
+    // ── ROW 4: FOUR FEEDERS ──
+    '<div class="sld-row">'+
+
+      // FEEDER 1: PV
+      '<div class="sld-feeder" style="border-left:3px solid '+(pvOn?'#f0a020':'#5a5a3a')+';">'+
+        '<span class="sld-feeder-label" style="color:'+(pvOn?'#f0a020':'#5a5a3a')+';">&#9728; 光伏阵列</span>'+
+        '<span class="sld-feeder-value" style="color:'+(pvOn?'#f0a020':'#5a5a3a')+';">'+snap.pv_kw.toFixed(0)+' kW</span>'+
+        '<span class="sld-feeder-sub">'+pvCap+' kWp &nbsp; GHI '+snap.ghi.toFixed(0)+'</span>'+
+        '<span class="sld-feeder-sub">逆变器 5台 &nbsp; MPPT 98.5%</span>'+
+        '<div class="sld-feeder-detail">'+
+          '<div style="display:flex;gap:2px;justify-content:center;margin-bottom:3px;">'+
+            [1,2,3,4,5].map(function(){return '<span style="display:inline-block;width:14px;height:7px;background:'+(pvOn?'rgba(240,160,32,0.6)':'rgba(80,80,40,0.3)')+';border-radius:1px;"></span>';}).join('')+
+          '</div>'+
+          '5串×6并 TOPCon 550Wp<br>'+
+          '云量 '+(snap.cloud_cover*100).toFixed(0)+'% &nbsp; 温度 '+snap.temp.toFixed(0)+'°C'+
+        '</div>'+
+      '</div>'+
+
+      // FEEDER 2: ESS
+      '<div class="sld-feeder" style="border-left:3px solid '+(essActive?'#4090d0':(essDisActive?'#50c838':'#5a6a80'))+';">'+
+        '<span class="sld-feeder-label" style="color:'+(essActive?'#4090d0':(essDisActive?'#50c838':'#5a6a80'))+';">&#9937; 储能系统</span>'+
+        '<span class="sld-feeder-value" style="color:'+(essActive?'#4090d0':(essDisActive?'#50c838':'#5a6a80'))+';">SOC '+socPct+'%</span>'+
+        '<span class="sld-feeder-sub">'+essCap+' kWh &nbsp; PCS '+essPow+' kW</span>'+
+        '<span class="sld-feeder-sub">'+(essActive?'充电 +'+essCh.toFixed(0):(essDisActive?'放电 -'+essDis.toFixed(0):'待机'))+' kW</span>'+
+        '<div class="sld-feeder-detail">'+
+          '<div class="sld-soc-bar"><div class="sld-soc-fill" style="width:'+Math.max(5,Math.min(95,soc*100))+'%"></div></div>'+
+          '<div style="margin-top:3px;">'+socPct+'% &nbsp; 范围 10%–90% SOC</div>'+
+        '</div>'+
+      '</div>'+
+
+      // FEEDER 3: EV
+      '<div class="sld-feeder" style="border-left:3px solid '+(evOn?'#e04050':'#5a3030')+';">'+
+        '<span class="sld-feeder-label" style="color:'+(evOn?'#e04050':'#5a3030')+';">&#128663; 充电站</span>'+
+        '<span class="sld-feeder-value" style="color:'+(evOn?'#e04050':'#5a3030')+';">'+snap.ev_total_kw.toFixed(0)+' kW</span>'+
+        '<span class="sld-feeder-sub">在用 '+snap.ev_active.toFixed(0)+'/'+totalPiles+' 桩 &nbsp; 排队 '+(snap.ev_waiting||0).toFixed(0)+'</span>'+
+        '<span class="sld-feeder-sub">快充120kW×16 &nbsp; 超充480kW×2</span>'+
+        '<div class="sld-feeder-detail">'+
+          '<div class="sld-pile-grid">'+
+            (function(){var h='';for(var pi=0;pi<Math.min(totalPiles,18);pi++){h+='<div class="sld-pile-dot '+(pi<snap.ev_active?'on':'off')+'"></div>';}return h;})()+
+          '</div>'+
+          '<div style="margin-top:3px;font-size:8px;">● 占用 ○ 空闲 (3排×6列)</div>'+
+        '</div>'+
+      '</div>'+
+
+      // FEEDER 4: BUILDING
+      '<div class="sld-feeder" style="border-left:3px solid #8898a8;">'+
+        '<span class="sld-feeder-label" style="color:#8898a8;">&#127968; 建筑负荷</span>'+
+        '<span class="sld-feeder-value" style="color:#d0d8e0;">'+snap.bldg_total_kw.toFixed(0)+' kW</span>'+
+        '<span class="sld-feeder-sub">空调 '+(bc['空调']||0).toFixed(0)+' &nbsp; 照明 '+(bc['照明']||0).toFixed(0)+' kW</span>'+
+        '<span class="sld-feeder-sub">餐饮 '+(bc['餐饮']||0).toFixed(0)+' &nbsp; 动力 '+(bc['动力']||0).toFixed(0)+' kW</span>'+
+        '<div class="sld-feeder-detail">'+
+          '<div class="sld-zone-row">'+
+            '<span class="sld-zone-chip" style="background:rgba(48,96,176,0.3);color:#80b0f0;">大厅</span>'+
+            '<span class="sld-zone-chip" style="background:rgba(160,80,48,0.3);color:#f0a060;">餐饮</span>'+
+            '<span class="sld-zone-chip" style="background:rgba(32,128,80,0.3);color:#60d080;">超市</span>'+
+            '<span class="sld-zone-chip" style="background:rgba(112,88,160,0.3);color:#b0a0e0;">办公</span>'+
+          '</div>'+
+          '<div style="margin-top:3px;">面积 3200 m² &nbsp; 峰值 147 kW</div>'+
+        '</div>'+
+      '</div>'+
+
+    '</div>'+
+
+    // ── ROW 5: STATUS BAR ──
+    '<div class="sld-status-bar">'+
+      '<div class="sld-status-item"><div class="sld-status-label">净负荷</div><div class="sld-status-value" style="color:'+(netLoad>=0?'#38c0c0':'#e04050')+';">'+netLoad.toFixed(0)+' kW '+(netLoad>=0?'余电':'购电')+'</div></div>'+
+      '<div class="sld-status-item"><div class="sld-status-label">光伏出力</div><div class="sld-status-value" style="color:'+(pvOn?'#f0a020':'#5a5a3a')+';">'+snap.pv_kw.toFixed(0)+' kW</div></div>'+
+      '<div class="sld-status-item"><div class="sld-status-label">总负荷</div><div class="sld-status-value" style="color:#d8e8f8;">'+snap.load_total_kw.toFixed(0)+' kW</div></div>'+
+      '<div class="sld-status-item"><div class="sld-status-label">SOC</div><div class="sld-status-value" style="color:'+(essActive?'#4090d0':(essDisActive?'#50c838':'#8898a8'))+';">'+socPct+'%</div></div>'+
+      '<div class="sld-status-item"><div class="sld-status-label">ESS功率</div><div class="sld-status-value" style="color:'+(essActive?'#4090d0':(essDisActive?'#50c838':'#8898a8'))+';">'+(essActive?'+'+essCh.toFixed(0):(essDisActive?'-'+essDis.toFixed(0):'0'))+' kW</div></div>'+
+      '<div class="sld-status-item"><div class="sld-status-label">变压器负载</div><div class="sld-status-value" style="color:'+(tfLoad>80?'#e04050':'#90a8b8')+';">'+tfLoad+'%</div></div>'+
+    '</div>'+
+
+  '</div>';
 }
-
 function drawPVCanvas(ctx, w, h, snap, cfg) {
   const isDay = snap.ghi > 30;
   const skyGrad = ctx.createLinearGradient(0, 0, 0, h*0.45);
@@ -901,6 +1031,10 @@ async function renderSCADA() {
   stopSCADATimer();
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🏭 SCADA 细粒度监控</strong> — 分钟级全组件仿真 (5分钟采样)，包含光伏Sandia热模型、储能SOC追踪、建筑ABM代理模型、充电站FCFS排队仿真的完整电气单线图。
+      切换下方按钮可查看光伏阵列/储能柜/建筑平面/充电站实景。原始数据由 <code style="color:var(--accent2);">/api/simulate/fine-grained-scada</code> 端点生成。
+    </div>
     <div class="metrics-row" id="spMetrics"></div>
     <div class="chart-box" style="margin-bottom:8px;padding:8px 12px;">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
@@ -937,7 +1071,8 @@ async function renderSCADA() {
           <button class="viz-tab-btn" data-viz="building" onclick="switchSPViz('building')">🏠 建筑平面</button>
           <button class="viz-tab-btn" data-viz="charging" onclick="switchSPViz('charging')">🚗 充电站</button>
         </h3>
-        <canvas id="spMainCanvas" style="width:100%;height:420px;border-radius:6px;"></canvas>
+        <div id="spSldHTML" style="min-height:420px;"></div>
+        <canvas id="spMainCanvas" style="width:100%;height:420px;border-radius:6px;display:none;"></canvas>
       </div>
       <div>
         <div class="chart-box"><h3>SOC + 电网功率</h3><div class="chart-inner" id="spSOCChart"></div></div>
@@ -958,6 +1093,10 @@ async function renderPowerFlow() {
   const rid = ++_renderId;
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">⚡ 分钟级功率流分析</strong> — 基于8760h预计算缓存的全年调度仿真。从分钟级SCADA数据聚合为逐时功率流，展示光伏/负荷/储能/电网的交互关系。
+      数据由 <code style="color:var(--accent2);">/api/simulate/dispatch-day</code> 和 <code style="color:var(--accent2);">/api/simulate/dispatch-year-summary</code> 端点实时计算。
+    </div>
     <div class="metrics-row" id="pfMetrics"><div style="color:#5a8aaa;padding:12px;">加载中...</div></div>
     <div class="row2" style="margin-bottom:12px;">
       <div class="chart-box"><h3>24h 功率流堆叠图</h3><div class="chart-inner" id="pfStackChart"></div></div>
@@ -1084,9 +1223,11 @@ async function renderPVData() {
   const rid = ++_renderId;
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">☀️ 光伏发电模型看板</strong> — 基于PVGIS ERA5卫星TMY数据 + Sandia热模型 + Kasten-Czeplak天气衰减模型。对比外部TMY与config硬编码值，支持10城市GHI排名。
+      数据来源：<code style="color:var(--accent2);">/api/data/tmy-comparison</code> + <code style="color:var(--accent2);">/api/data/pv-model</code> + <code style="color:var(--accent2);">/api/simulate/dispatch-day</code>。
+    </div>
     <div class="metrics-row" id="pvMetrics"><div style="color:#5a8aaa;padding:12px;">加载中...</div></div>
-    <div class="row2" style="margin-bottom:12px;">
-      <div class="chart-box"><h3>☀️ 典型日光伏出力曲线 <span class="data-badge green">PVGIS TMY</span></h3><div class="chart-inner" id="pvDayChart"></div></div>
       <div class="chart-box"><h3>📊 PVGIS vs Config GHI对比</h3><div class="chart-inner" id="pvGhiCompChart"></div></div>
     </div>
     <div class="row2" style="margin-bottom:12px;">
@@ -1273,6 +1414,10 @@ async function renderESSData() {
   const rid = ++_renderId;
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🔋 储能系统模型看板</strong> — LFP磷酸铁锂储能，Arrhenius日历衰减+循环衰减双模型，含PCS双向变流器效率模型。SOC运行范围10%-90%。
+      数据来源：<code style="color:var(--accent2);">/api/simulate/dispatch-day</code> 调度仿真 + 电池规格书参数。
+    </div>
     <div class="metrics-row" id="essMetrics"><div style="color:#5a8aaa;padding:12px;">加载中...</div></div>
     <div class="row2" style="margin-bottom:12px;">
       <div class="chart-box"><h3>典型日SOC曲线 + 充放电功率</h3><div class="chart-inner" id="essDayChart"></div></div>
@@ -1357,6 +1502,10 @@ async function renderBuildingData() {
   stopSCADATimer();
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🏠 建筑负荷模型看板</strong> — Agent-Based Model (37员工+20旅客+80司机动态池)，v6.7集成ASHRAE 90.1空调热模型(温度驱动)和自然采光照明调光(GHI驱动)。
+      数据来源：<code style="color:var(--accent2);">/api/config/building-load</code> + config.py BUILDING_LOAD 四季剖面 + ABM模拟。
+    </div>
     <div class="metrics-row" id="bldMetrics"><div style="color:#5a8aaa;padding:12px;">加载中...</div></div>
     <div class="row2" style="margin-bottom:12px;">
       <div class="chart-box"><h3>四季典型日建筑负荷曲线</h3><div class="chart-inner" id="bldSeasonChart"></div></div>
@@ -1374,8 +1523,8 @@ async function renderBuildingData() {
   document.getElementById('bldMetrics').innerHTML =
     metricCard('🏠 建筑面积', area+' m²', '综合服务楼', '#8090a0') +
     metricCard('⚡ 峰值负荷', peak+' kW', '夏季空调高峰', '#e8e8f0') +
-    metricCard('📊 单位面积负荷', (peak/area*1000).toFixed(0)+' W/m²', '峰值指标', '#5a85a5') +
-    metricCard('🌡️ 空调占比', '~41%', '夏季制冷负荷', '#f08030');
+    metricCard('👥 ABM智能体', '120 个', '37员工+20旅客+63司机', '#60d040') +
+    metricCard('🌡️ 空调占比', '~41%', 'ASHRAE 90.1热模型', '#f08030');
 
   const colors = {spring:'#60d040',summer:'#e04050',autumn:'#f0a020',winter:'#4090d0'};
   const names = {spring:'🌸 春季',summer:'☀️ 夏季',autumn:'🍂 秋季',winter:'❄️ 冬季'};
@@ -1401,12 +1550,19 @@ async function renderBuildingData() {
   }
 
   document.getElementById('bldSpecTable').innerHTML = `
-    <tr><th>参数</th><th>数值</th><th>说明</th></tr>
-    <tr><td>建筑面积</td><td class="num">${area} m²</td><td>2层综合服务楼</td></tr>
+    <tr><th>参数分类</th><th>参数</th><th>数值</th><th>说明</th></tr>
+    <tr><td rowspan="3" style="color:var(--accent2);">建筑设计</td><td>建筑面积</td><td class="num">${area} m²</td><td>2层综合服务楼</td></tr>
     <tr><td>峰值负荷</td><td class="num">${peak} kW</td><td>夏季7月下午</td></tr>
     <tr><td>年均能耗强度</td><td class="num">~${(peak*365*0.35/area).toFixed(0)} kWh/m²/yr</td><td>含空调+照明+动力</td></tr>
-    <tr><td>空调能效比(COP)</td><td class="num">3.5</td><td>中央空调系统</td></tr>
-    <tr><td>ABM人员密度</td><td class="num">0.3~1.2 p/m²</td><td>基于智能体建模</td></tr>
+    <tr><td rowspan="4" style="color:#60d040;">ABM智能体</td><td>驻守员工</td><td class="num">37 人</td><td>固定作息, 在室率~72%</td></tr>
+    <tr><td>住宿旅客</td><td class="num">20 人</td><td>70%入住率, 停留~3h</td></tr>
+    <tr><td>流动司机池</td><td class="num">80~150 人</td><td>停留~1.5h, 日类型变化</td></tr>
+    <tr><td>出勤率分布</td><td class="num">N(0.72, 0.05²)</td><td>月度波动因子0.75~1.25</td></tr>
+    <tr><td rowspan="3" style="color:#f08030;">HVAC (v6.7)</td><td>制冷COP</td><td class="num">3.5</td><td>ASHRAE 90.1中央空调</td></tr>
+    <tr><td>围护结构U值</td><td class="num">1.5 W/m²·K</td><td>含窗墙比0.25</td></tr>
+    <tr><td>新风负荷</td><td class="num">0.5 L/s·m²</td><td>渗透ACH 0.5</td></tr>
+    <tr><td rowspan="2" style="color:#4090d0;">照明 (v6.7)</td><td>照明功率密度</td><td class="num">12 W/m²</td><td>设计照度500lux</td></tr>
+    <tr><td>自然采光</td><td class="num">GHI→照度转换</td><td>最低调光15%</td></tr>
   `;
 }
 
@@ -1416,6 +1572,10 @@ async function renderChargingData() {
   const rid = ++_renderId;
   const c = document.getElementById('content');
   c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🔌 充电行为模型看板</strong> — v6.6物理模型：高速公路交通流量 → NEV渗透率 → 到站SOC物理推算(里程反推) → CC-CV充电曲线(GB/T 27930) → FCFS排队。
+      支持四类日型+天气+月份多维场景。数据来源：<code style="color:var(--accent2);">/api/data/charging-curve</code> + <code style="color:var(--accent2);">/api/data/traffic-profile</code> + <code style="color:var(--accent2);">/api/data/vehicle-sample</code>。
+    </div>
     <div class="metrics-row" id="chgMetrics"><div style="color:#5a8aaa;padding:12px;">加载中...</div></div>
     <div class="row2" style="margin-bottom:12px;">
       <div class="chart-box"><h3>🚗 四类日型充电负荷曲线 <span class="data-badge green">物理模型v6.6</span></h3><div class="chart-inner" id="chgDayTypeChart"></div></div>
@@ -1423,12 +1583,13 @@ async function renderChargingData() {
     </div>
     <div class="row2" style="margin-bottom:12px;">
       <div class="chart-box"><h3>📊 交通流量到达分布 (旧vs新模型)</h3><div class="chart-inner short" id="chgTrafficChart"></div></div>
-      <div class="chart-box"><h3>🔍 单车诊断: 里程→到站SOC</h3><div class="chart-inner short" id="chgVehicleChart"></div></div>
+      <div class="chart-box"><h3>📊 MC不确定性分布 <span class="data-badge green">P5-P50-P95</span></h3><div class="chart-inner short" id="chgMCChart"></div></div>
     </div>
     <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>🔍 单车诊断: 里程→到站SOC</h3><div class="chart-inner short" id="chgVehicleChart"></div></div>
       <div class="chart-box"><h3>⏱️ 充电时长分布 (CC-CV模型)</h3><div class="chart-inner short" id="chgDurChart"></div></div>
-      <div class="chart-box"><h3>📋 模型参数 & 数据源 <span class="data-badge">可点击</span></h3><table class="data-table clickable" id="chgSpecTable"></table></div>
     </div>
+    <div class="chart-box" style="margin-bottom:12px;"><h3>📋 模型参数 & 数据源 <span class="data-badge">可点击查看详情</span></h3><table class="data-table clickable" id="chgSpecTable"></table></div>
   `;
 
   const [cccv, traffic, vehicles] = await Promise.all([
@@ -1477,6 +1638,11 @@ async function renderChargingData() {
 
   // Vehicle diagnostics
   if (vehicles && vehicles.samples) { drawVehicleDiagChart(vehicles); drawChgDurationChart(vehicles); }
+
+  // MC uncertainty distribution (workday baseline)
+  fetchAPI('/api/simulate/mc-distribution?day_type=workday&weather=clear&month=6&n_runs=400').then(function(mcDist) {
+    if (mcDist && document.getElementById('chgMCChart')) { drawMCDistChart(mcDist); }
+  });
 
   // 参数表
   document.getElementById('chgSpecTable').innerHTML = `
@@ -1572,6 +1738,27 @@ function drawChgDurationChart(d) {
     xAxis:{type:'category',data:bins.slice(0,-1).map(function(b,i){return ((b+bins[i+1])/2).toFixed(0)+'min';}),axisLabel:{color:'#5a85a5',fontSize:8}},
     yAxis:{type:'value',name:'辆数',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
     series:[{type:'bar',data:counts,itemStyle:{color:'#40e0a0',opacity:0.8},barWidth:'70%'}]
+  });
+  setTimeout(function(){c.resize();},200);
+}
+
+// ---- MC uncertainty distribution ----
+function drawMCDistChart(d) {
+  var c = initChart('chgMCChart'); if (!c) return;
+  var hours = Array.from({length:24},function(_,i){return i+':00';});
+  // Build band data
+  var p50 = d.hourly_p50 || [], p95 = d.hourly_p95 || [], p5 = d.hourly_p5 || [];
+  c.setOption({
+    tooltip:{trigger:'axis'},
+    legend:{data:['P95','P50','P5'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+    grid:{top:35,right:15,bottom:25,left:50},
+    xAxis:{type:'category',data:hours,axisLabel:{color:'#5a85a5',fontSize:9}},
+    yAxis:{type:'value',name:'kW',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+    series:[
+      {name:'P95',type:'line',data:p95,smooth:true,lineStyle:{color:'#e04050',width:1,type:'dashed'},symbol:'none',areaStyle:{color:'rgba(224,64,80,0.05)'}},
+      {name:'P50',type:'line',data:p50,smooth:true,lineStyle:{color:'#f08030',width:2.5},symbol:'none',areaStyle:{color:'rgba(240,128,48,0.15)'}},
+      {name:'P5',type:'line',data:p5,smooth:true,lineStyle:{color:'#4090d0',width:1,type:'dashed'},symbol:'none'}
+    ]
   });
   setTimeout(function(){c.resize();},200);
 }
@@ -2324,26 +2511,534 @@ function renderCalibrationContent(d) {
   }, 100);
 }
 
+// ============================ CHARGING STATION LIVE (v8.0) ============================
+let _clData = null, _clTimer = null, _clMinute = 0, _clPlaying = false;
+let _clDayType = 'workday', _clMonth = 6, _clHour = 12;
+
+async function loadChargingLive() {
+  _clData = await fetchAPI('/api/simulate/charging-station-live?hour=' + _clHour + '&day_type=' + _clDayType + '&month=' + _clMonth + '&duration_minutes=180');
+  if (_clData) { _clMinute = 0; updateChargingLive(0); }
+}
+
+function updateChargingLive(minute) {
+  if (!_clData || !_clData.timeline) return;
+  const tl = _clData.timeline;
+  minute = Math.min(minute, tl.length - 1);
+  const snap = tl[minute];
+  _clMinute = minute;
+
+  document.getElementById('clTimeLabel').textContent =
+    String(Math.floor((_clHour * 60 + minute) / 60) % 24).padStart(2, '0') + ':' + String((_clHour * 60 + minute) % 60).padStart(2, '0');
+  document.getElementById('clMinute').value = minute;
+  document.getElementById('clActiveCount').textContent = snap.active_sessions;
+  document.getElementById('clWaitCount').textContent = snap.waiting;
+  document.getElementById('clPower').textContent = snap.total_power_kw.toFixed(0) + ' kW';
+  document.getElementById('clEnergy').textContent = (snap.total_power_kw / 60).toFixed(2) + ' kWh/min';
+
+  drawChargingLiveCanvas(snap);
+}
+
+function drawChargingLiveCanvas(snap) {
+  const canvas = document.getElementById('clCanvas');
+  if (!canvas || !_clData) return;
+  const w = canvas.width = canvas.clientWidth;
+  const h = canvas.height = canvas.clientHeight;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#0a1620'; ctx.fillRect(0, 0, w, h);
+
+  // Parking lot layout
+  const lotX = 30, lotY = 30, lotW = w - 60, lotH = h * 0.65;
+  ctx.fillStyle = '#0c1a12'; ctx.strokeStyle = '#2a4a2a'; ctx.lineWidth = 2;
+  roundRect(ctx, lotX, lotY, lotW, lotH, 6); ctx.fill(); ctx.stroke();
+
+  // Road markings
+  ctx.strokeStyle = '#3a5a3a'; ctx.lineWidth = 1; ctx.setLineDash([10, 15]);
+  ctx.beginPath(); ctx.moveTo(lotX, lotY + lotH * 0.33); ctx.lineTo(lotX + lotW, lotY + lotH * 0.33); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(lotX, lotY + lotH * 0.66); ctx.lineTo(lotX + lotW, lotY + lotH * 0.66); ctx.stroke();
+  ctx.setLineDash([]);
+
+  const pileCfg = _clData.pile_config || [];
+  const pileDetail = snap.piles_detail || [];
+  const cols = 6, rows = 3;
+  const pileW = (lotW - 60) / cols, pileH = (lotH - 40) / rows;
+
+  pileCfg.forEach(p => {
+    const col = p.x % cols, row = Math.floor(p.x / cols);
+    const px = lotX + 20 + col * pileW, py = lotY + 15 + row * pileH;
+    const active = pileDetail.find(d => d.pile_idx === p.x);
+    const isCharging = active && active.status === 'charging';
+    const isFull = active && active.status === 'completed';
+
+    // Parking spot
+    ctx.fillStyle = isCharging ? '#0a1a0e' : isFull ? '#0a1208' : '#080c08';
+    ctx.strokeStyle = isCharging ? '#40c060' : isFull ? '#809030' : '#1a2a1a';
+    ctx.lineWidth = 1.5;
+    roundRect(ctx, px + 2, py + 2, pileW - 4, pileH - 4, 4); ctx.fill(); ctx.stroke();
+
+    // Pile label
+    ctx.fillStyle = isCharging ? '#60d040' : '#4a6a4a';
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(p.id, px + pileW / 2, py + pileH / 2 - 4);
+
+    if (active) {
+      // Car visualization
+      const carColor = active.car_color || '#40a0d0';
+      ctx.fillStyle = carColor;
+      roundRect(ctx, px + 5, py + pileH * 0.3, pileW - 10, pileH * 0.4, 3); ctx.fill();
+      ctx.fillStyle = '#000'; ctx.fillRect(px + 8, py + pileH * 0.28, 4, 3);
+      ctx.fillRect(px + pileW - 12, py + pileH * 0.28, 4, 3);
+
+      // SOC bar
+      const socPct = active.soc || 0;
+      ctx.fillStyle = '#0a0a0a'; ctx.fillRect(px + 4, py + pileH - 16, pileW - 8, 5);
+      const socGrad = ctx.createLinearGradient(px + 4, 0, px + pileW - 8, 0);
+      socGrad.addColorStop(0, '#e04050'); socGrad.addColorStop(0.5, '#f0a020'); socGrad.addColorStop(1, '#60d040');
+      ctx.fillStyle = socGrad;
+      ctx.fillRect(px + 4, py + pileH - 16, (pileW - 8) * socPct, 5);
+      ctx.fillStyle = '#80c080'; ctx.font = '6px monospace';
+      ctx.fillText((socPct * 100).toFixed(0) + '%', px + pileW / 2, py + pileH - 4);
+    } else {
+      ctx.fillStyle = '#2a3a2a'; ctx.font = '7px "Microsoft YaHei"';
+      ctx.fillText(p.type === '480kW' ? '⚡超充' : '空闲', px + pileW / 2, py + pileH / 2 + 10);
+    }
+  });
+
+  // Queue visualization
+  if (snap.waiting > 0) {
+    const qY = lotY + lotH + 15;
+    ctx.fillStyle = '#f08030'; ctx.font = 'bold 10px "Microsoft YaHei"'; ctx.textAlign = 'left';
+    ctx.fillText('⏳ 排队等待: ' + snap.waiting + ' 辆', 35, qY);
+    for (let i = 0; i < Math.min(snap.waiting, 10); i++) {
+      ctx.fillStyle = '#f08030'; ctx.font = '14px sans-serif';
+      ctx.fillText('🚗', 35 + i * 24, qY + 18);
+    }
+  } else {
+    ctx.fillStyle = '#4a7a4a'; ctx.font = '10px "Microsoft YaHei"'; ctx.textAlign = 'left';
+    ctx.fillText('✓ 无排队等待', 35, lotY + lotH + 18);
+  }
+
+  // Legend
+  ctx.fillStyle = 'rgba(8,18,32,0.95)'; ctx.fillRect(0, h - 30, w, 30);
+  ctx.fillStyle = '#5a85a5'; ctx.font = '9px "Microsoft YaHei"'; ctx.textAlign = 'left';
+  ctx.fillText('🟢 充电中', 15, h - 10);
+  ctx.fillText('🟡 充满逗留', 95, h - 10);
+  ctx.fillText('⚫ 空闲', 185, h - 10);
+  ctx.fillText('累计充电: ' + (snap.total_power_kw / 60).toFixed(2) + ' kWh/min', 270, h - 10);
+  ctx.fillText(' | 峰值: ' + (_clData.peak_power_kw || 0).toFixed(0) + ' kW', 450, h - 10);
+  ctx.fillText(' | 平均在线: ' + (_clData.avg_active_sessions || 0).toFixed(1) + ' 辆', 570, h - 10);
+}
+
+function toggleCLPlay() {
+  _clPlaying = !_clPlaying;
+  const btn = document.getElementById('clPlayBtn');
+  if (_clPlaying) {
+    btn.textContent = '⏸ 暂停';
+    _clTimer = setInterval(function() {
+      let m = _clMinute + 1;
+      if (m >= (_clData ? _clData.timeline.length : 180)) m = 0;
+      updateChargingLive(m);
+    }, 150);
+  } else {
+    btn.textContent = '▶ 播放';
+    if (_clTimer) { clearInterval(_clTimer); _clTimer = null; }
+  }
+}
+
+async function renderChargingLive() {
+  stopSCADATimer();
+  if (_clTimer) { clearInterval(_clTimer); _clTimer = null; _clPlaying = false; }
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🔬 充电站实景仿真</strong> — 基于高速车流量 + NEV渗透率 + Poisson到达过程的逐分钟充电站运营仿真。
+      仿真引擎运行在服务端，前端渲染逐分钟车辆到达/充电进度/排队/离开全过程。模型来源：文件17 §3.1 交通流量模型 + 文件11 充电行为模型。
+    </div>
+    <div class="metrics-row" id="clMetrics">
+      ${metricCard('🔌 在线充电', '<span id="clActiveCount">-</span> 辆', '', '#60d040')}
+      ${metricCard('⏳ 排队等待', '<span id="clWaitCount">-</span> 辆', '', '#f08030')}
+      ${metricCard('⚡ 实时功率', '<span id="clPower">-</span>', '', '#e04050')}
+      ${metricCard('📊 充电速率', '<span id="clEnergy">-</span>', '', '#40e0a0')}
+    </div>
+    <div class="chart-box" style="margin-bottom:8px;padding:8px 12px;">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span style="font-size:10px;color:#5a8aaa;font-weight:600;">⏱ 仿真控制</span>
+        <span style="font-size:9px;color:#5a8aaa;">日类型:</span>
+        <select class="sp-select" id="clDayType" onchange="_clDayType=this.value;loadChargingLive();">
+          <option value="workday">工作日</option><option value="weekend">周末</option><option value="holiday">节假日</option></select>
+        <span style="font-size:9px;color:#5a8aaa;">月份:</span>
+        <select class="sp-select" id="clMonth" onchange="_clMonth=parseInt(this.value);loadChargingLive();">
+          ${[1,2,3,4,5,6,7,8,9,10,11,12].map(function(m){return '<option value="'+m+'"'+(m===6?' selected':'')+'>'+m+'月</option>';}).join('')}</select>
+        <span style="font-size:9px;color:#5a8aaa;">起始:</span>
+        <select class="sp-select" id="clHour" onchange="_clHour=parseInt(this.value);loadChargingLive();">
+          ${Array.from({length:24},function(_,i){return '<option value="'+i+'"'+(i===12?' selected':'')+'>'+i+':00</option>';}).join('')}</select>
+        <span style="font-size:9px;color:#5a8aaa;">仿真:</span>
+        <span style="font-size:9px;color:var(--bright);">0min</span>
+        <input type="range" class="sp-range" id="clMinute" min="0" max="179" value="0" style="flex:1;min-width:60px;"
+          oninput="updateChargingLive(parseInt(this.value));">
+        <span style="font-size:9px;color:var(--bright);">180min</span>
+        <span id="clTimeLabel" style="color:var(--accent);font-size:14px;font-weight:700;min-width:44px;">12:00</span>
+        <button class="btn btn-primary btn-sm" id="clPlayBtn" onclick="toggleCLPlay()">▶ 播放</button>
+      </div>
+    </div>
+    <div class="chart-box" style="min-height:420px;">
+      <canvas id="clCanvas" style="width:100%;height:400px;border-radius:6px;"></canvas>
+    </div>
+  `;
+  setTimeout(function() { loadChargingLive(); }, 200);
+}
+
+// ============================ TOPOLOGY COMPARISON (v8.0) ============================
+async function renderTopology() {
+  stopSCADATimer();
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🔗 微网拓扑架构对比</strong> — 评估四种主流拓扑方案在综合效率、经济性、可靠性、可扩展性、控制简便性、保护成熟度六个维度的优劣。
+      数据来源：文件15 微网架构设计 §2 + 国网典型设计规范。雷达图展示各架构的六维评分。
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>🎯 四架构六维雷达对比</h3><div class="chart-inner tall" id="topoRadarChart"></div></div>
+      <div style="display:flex;flex-direction:column;gap:10px;">
+        <div class="chart-box" style="flex:1;"><h3>📊 投资成本对比</h3><div class="chart-inner short" id="topoCostChart"></div></div>
+        <div class="chart-box" style="flex:1;"><h3>⚡ 综合效率排名</h3><div class="chart-inner short" id="topoEffChart"></div></div>
+      </div>
+    </div>
+    <div class="chart-box"><h3>📋 架构详细参数</h3><table class="data-table" id="topoTable"></table></div>
+  `;
+
+  const topo = await fetchAPI('/api/results/topology');
+  if (!topo || !topo.topologies) return;
+
+  const topos = topo.topologies;
+  const dims = ['综合效率','经济性','可靠性','可扩展性','控制简便','保护成熟'];
+  const colors = ['#00c8f0','#40e0a0','#f0a020','#e04050'];
+
+  // Radar chart
+  const rc = initChart('topoRadarChart');
+  if (rc) {
+    rc.setOption({
+      legend:{data:topos.map(function(t){return t.name;}),textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      radar:{center:['50%','55%'],radius:'65%',
+        indicator:dims.map(function(d){return {name:d,max:100};}),
+        axisName:{color:'#8ab4d0',fontSize:9},
+        splitArea:{areaStyle:{color:['rgba(0,200,240,0.02)','rgba(0,200,240,0.04)']}},
+        splitLine:{lineStyle:{color:'#1a3a5a'}},axisLine:{lineStyle:{color:'#1a3a5a'}}
+      },
+      series:[{type:'radar',data:topos.map(function(t,i){
+        return {name:t.name,value:dims.map(function(d){return t.scores[d];}),
+          lineStyle:{color:colors[i]},areaStyle:{color:colors[i]+'20'},
+          symbol:'circle',symbolSize:5,itemStyle:{color:colors[i]}};
+      })}]
+    });
+  }
+
+  // Cost bar
+  const cc = initChart('topoCostChart');
+  if (cc) {
+    cc.setOption({
+      tooltip:{trigger:'axis'},grid:{top:15,right:15,bottom:25,left:70},
+      xAxis:{type:'value',name:'万元',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:{type:'category',data:topos.map(function(t){return t.name;}).reverse(),axisLabel:{color:'#8ab4d0',fontSize:9}},
+      series:[{type:'bar',data:topos.map(function(t){return t.investment_wan;}).reverse(),
+        itemStyle:{color:function(p){return colors[topos.length-1-p.dataIndex];}},barWidth:'50%',
+        label:{show:true,position:'right',color:'#8ab4d0',fontSize:9,formatter:'{c}万'}}]
+    });
+  }
+
+  // Efficiency bar
+  const ec = initChart('topoEffChart');
+  if (ec) {
+    ec.setOption({
+      tooltip:{trigger:'axis'},grid:{top:15,right:15,bottom:25,left:70},
+      xAxis:{type:'value',name:'%',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#5a85a5',fontSize:9},min:90,max:100},
+      yAxis:{type:'category',data:topos.map(function(t){return t.name;}).reverse(),axisLabel:{color:'#8ab4d0',fontSize:9}},
+      series:[{type:'bar',data:topos.map(function(t){return t.efficiency;}).reverse(),
+        itemStyle:{color:function(p){return colors[topos.length-1-p.dataIndex];}},barWidth:'50%',
+        label:{show:true,position:'right',color:'#8ab4d0',fontSize:9,formatter:'{c}%'}}]
+    });
+  }
+
+  // Table
+  document.getElementById('topoTable').innerHTML = '<tr><th>架构</th><th>效率</th><th>投资(万元)</th><th>技术成熟度</th><th>适用场景</th><th>推荐</th></tr>'+
+    topos.map(function(t,i){
+      return '<tr><td style="color:'+colors[i]+';font-weight:600;">'+t.name+'</td>'+
+        '<td class="num">'+t.efficiency+'%</td><td class="num">'+t.investment_wan+'</td>'+
+        '<td class="num">'+('★'.repeat(t.tech_maturity))+'</td><td style="font-size:9px;">'+t.recommendation+'</td>'+
+        '<td><span class="tag '+(i===0?'green':i===1?'blue':'orange')+'">'+(i===0?'★推荐':i===1?'备选':'特定场景')+'</span></td></tr>';
+    }).join('');
+}
+
+// ============================ V2G + DR ANALYSIS (v8.0) ============================
+async function renderV2GDR() {
+  stopSCADATimer();
+  const c = document.getElementById('content');
+
+  await loadSharedData();
+  const cfg = _cache.cfg || {};
+  const opt = normOpt(_cache.opt || {});
+
+  c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">🔄 V2G双向充放电 + 需求响应(DR)分析</strong> — V2G利用EV电池作为分布式储能向电网反向供电；DR通过价格信号引导柔性负荷参与电网调峰。
+      数据来源：文件25 V2G/需求响应/S曲线/ABM标定数据。当前为基于config参数的静态分析，动态仿真需连接实时电价接口。
+    </div>
+    <div class="metrics-row" id="v2gMetrics"></div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>🔋 V2G 收益构成分析</h3><div class="chart-inner" id="v2gRevenueChart"></div></div>
+      <div class="chart-box"><h3>📊 DR 需求响应事件分析</h3><div class="chart-inner" id="drEventChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>⚡ V2G充放电调度示意 (24h)</h3><div class="chart-inner" id="v2gScheduleChart"></div></div>
+      <div class="chart-box"><h3>📋 V2G + DR 参数配置</h3><table class="data-table" id="v2gSpecTable"></table></div>
+    </div>
+  `;
+
+  // Config values (from config.py)
+  const v2gEnabled = true, v2gPiles = 2, v2gPower = 60, v2gEff = 0.92, v2gDod = 0.85;
+  const v2gPrice = 0.85, v2gDegCost = 0.35, v2gNetRev = 0.50;
+  const drEnabled = true, drEvents = 48, drComp = 2.5, drDur = 3;
+  const annualV2GRev = v2gPiles * v2gPower * 365 * v2gDod * v2gNetRev * 2 / 10000;
+  const annualDRRev = drEvents * drDur * (opt.annual_load_kwh || 4337449) / 8760 * 0.15 * drComp / 10000;
+
+  document.getElementById('v2gMetrics').innerHTML =
+    metricCard('🔋 V2G桩数', v2gPiles + ' 台', '60kW双向', '#60d040') +
+    metricCard('💰 V2G年收益', annualV2GRev.toFixed(1) + ' 万元', '净收益', '#40e0a0') +
+    metricCard('📊 DR年事件', drEvents + ' 次', '年收益~' + annualDRRev.toFixed(1) + '万元', '#f08030') +
+    metricCard('⚡ V2G效率', (v2gEff * 100).toFixed(0) + '%', '充放电往返效率', '#4090d0');
+
+  // V2G Revenue pie
+  const vr = initChart('v2gRevenueChart');
+  if (vr) {
+    vr.setOption({
+      tooltip:{trigger:'item'},
+      legend:{data:['峰谷套利','调频服务','容量市场','需求响应','电池衰减成本'],textStyle:{color:'#5a85a5',fontSize:9},top:5,left:'center'},
+      series:[{type:'pie',radius:['40%','70%'],center:['50%','55%'],
+        data:[
+          {name:'峰谷套利',value:45,itemStyle:{color:'#60d040'}},
+          {name:'调频服务',value:25,itemStyle:{color:'#4090d0'}},
+          {name:'容量市场',value:15,itemStyle:{color:'#f0a020'}},
+          {name:'需求响应',value:15,itemStyle:{color:'#e04050'}},
+          {name:'电池衰减成本',value:-20,itemStyle:{color:'#8090a0'}},
+        ],
+        label:{color:'#8ab4d0',fontSize:9,formatter:'{b}\n{d}%'}
+      }]
+    });
+  }
+
+  // DR event chart
+  const dr = initChart('drEventChart');
+  if (dr) {
+    const months = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+    dr.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['DR事件数','补偿单价'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:60,bottom:25,left:50},
+      xAxis:{type:'category',data:months,axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:[{type:'value',name:'次数',nameTextStyle:{color:'#f08030'},axisLabel:{color:'#f08030',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+        {type:'value',name:'元/kWh',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{show:false}}],
+      series:[
+        {name:'DR事件数',type:'bar',data:[1,1,2,3,4,7,12,10,5,3,2,1],itemStyle:{color:'#f08030',opacity:0.8},barWidth:20},
+        {name:'补偿单价',type:'line',data:[3.2,3.2,2.8,2.5,2.5,2.2,3.5,4.0,3.0,2.5,2.8,3.2],yAxisIndex:1,lineStyle:{color:'#40e0a0',width:2},symbol:'circle',symbolSize:6}
+      ]
+    });
+  }
+
+  // V2G schedule
+  const vs = initChart('v2gScheduleChart');
+  if (vs) {
+    const hours = Array.from({length:24},function(_,i){return i+':00';});
+    vs.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['V2G放电','V2G充电','TOU电价'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:60,bottom:25,left:50},
+      xAxis:{type:'category',data:hours,axisLabel:{color:'#5a85a5',fontSize:9}},
+      yAxis:[{type:'value',name:'kW',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+        {type:'value',name:'元/kWh',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{show:false}}],
+      series:[
+        {name:'V2G放电',type:'bar',data:[0,0,0,0,0,0,0,0,30,60,60,30,0,0,0,0,0,30,60,60,60,30,0,0],
+          itemStyle:{color:'#60d040'},barWidth:10},
+        {name:'V2G充电',type:'bar',data:[60,60,60,60,30,0,0,0,0,0,0,0,60,60,60,0,0,0,0,0,0,0,60,60],
+          itemStyle:{color:'#4090d0'},barWidth:10},
+        {name:'TOU电价',type:'line',data:[0.3,0.3,0.3,0.3,0.3,0.3,0.6,0.6,1.2,1.2,1.2,0.85,0.85,0.85,0.6,0.6,0.6,0.85,1.2,1.2,1.2,0.85,0.6,0.3],
+          yAxisIndex:1,lineStyle:{color:'#e04050',width:2},symbol:'none',smooth:true}
+      ]
+    });
+  }
+
+  document.getElementById('v2gSpecTable').innerHTML = `
+    <tr><th>参数分类</th><th>参数</th><th>数值</th><th>说明</th></tr>
+    <tr><td rowspan="4" style="color:var(--accent2);">V2G 配置</td>
+      <td>V2G充电桩</td><td class="num">2 台 × 60kW</td><td>双向DC/AC变流器</td></tr>
+    <tr><td>V2G效率</td><td class="num">92%</td><td>充放电往返效率</td></tr>
+    <tr><td>V2G DOD限制</td><td class="num">85%</td><td>保护车载电池寿命</td></tr>
+    <tr><td>净收益</td><td class="num" style="color:var(--accent2);">${v2gNetRev} 元/kWh</td><td>扣除电池衰减成本后</td></tr>
+    <tr><td rowspan="4" style="color:#f08030;">DR 需求响应</td>
+      <td>年DR事件</td><td class="num">${drEvents} 次</td><td>夏季午后调峰为主</td></tr>
+    <tr><td>单次时长</td><td class="num">${drDur} 小时</td><td>峰值削减窗口</td></tr>
+    <tr><td>补偿标准</td><td class="num">${drComp} 元/kWh</td><td>削峰填谷补偿</td></tr>
+    <tr><td>削减比例</td><td class="num">~15%</td><td>柔性负荷可削减比</td></tr>
+    <tr><td rowspan="3" style="color:#4090d0;">经济评估</td>
+      <td>V2G年收益</td><td class="num" style="color:var(--accent2);">${annualV2GRev.toFixed(1)} 万元</td><td>峰谷套利+调频</td></tr>
+    <tr><td>DR年收益</td><td class="num" style="color:var(--accent2);">${annualDRRev.toFixed(1)} 万元</td><td>需求响应补偿</td></tr>
+    <tr><td>合计年增量</td><td class="num" style="color:var(--accent2);font-weight:700;">${(annualV2GRev+annualDRRev).toFixed(1)} 万元</td><td>V2G+DR总收益</td></tr>
+  `;
+}
+
+// ============================ SCENARIO EVOLUTION (v8.0) ============================
+async function renderScenario() {
+  stopSCADATimer();
+  const c = document.getElementById('content');
+  c.innerHTML = `
+    <div style="background:rgba(0,200,240,0.06);border:1px solid rgba(0,200,240,0.2);border-radius:6px;padding:8px 14px;margin-bottom:10px;font-size:10px;color:#6a9aba;">
+      <strong style="color:var(--accent);">📅 场景演化分析</strong> — 基于Bass扩散模型预测NEV渗透率增长、Logistic模型预测负荷增长、以及TMY天气数据驱动的多年场景推演。
+      模型来源：文件21 动态参数演化模型 §3 Bass扩散 + §5 Logistic增长 + 文件20 O&M优化。40年(2025-2065)长周期预测支持战略级规划决策。
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>🚗 NEV渗透率演化 (Bass扩散模型)</h3><div class="chart-inner short" id="scNevChart"></div></div>
+      <div class="chart-box"><h3>📈 负荷增长预测 (Logistic模型)</h3><div class="chart-inner short" id="scLoadChart"></div></div>
+    </div>
+    <div class="row2" style="margin-bottom:12px;">
+      <div class="chart-box"><h3>⚡ 充电需求与光伏发电 演化对比</h3><div class="chart-inner short" id="scEneChart"></div></div>
+      <div class="chart-box"><h3>📊 多情景NPV对比 (40年)</h3><div class="chart-inner short" id="scNpvChart"></div></div>
+    </div>
+    <div class="chart-box"><h3>📋 场景参数设定 & 说明</h3><table class="data-table" id="scSpecTable"></table></div>
+  `;
+
+  await loadSharedData();
+  const opt = normOpt(_cache.opt || {});
+
+  // Bass diffusion parameters from config
+  const bassP = 0.003, bassQ = 0.38, bassK = 0.85;
+  const years = Array.from({length:41},function(_,i){return 2025+i;});
+
+  // NEV penetration Bass model
+  function bassModel(t, p, q, K) {
+    const expTerm = Math.exp(-(p + q) * t);
+    const m = K / (1 + ((q * (1 - expTerm)) / (p + q * expTerm)));
+    return m * K / (1 + (q / p) * Math.exp(-(p + q) * t));
+  }
+
+  const nevData = years.map(function(_, i) {
+    const t = i;
+    const f = (1 - Math.exp(-(bassP + bassQ) * t)) / (1 + (bassQ / bassP) * Math.exp(-(bassP + bassQ) * t));
+    return (f * bassK * 100).toFixed(1);
+  });
+
+  // Logistic load growth
+  const logisticR = 0.06, logisticT0 = 43, logisticK = 2.5;
+  const loadData = years.map(function(_, i) {
+    return (1 + (logisticK - 1) / (1 + Math.exp(-logisticR * (i - logisticT0)))).toFixed(2);
+  });
+
+  // NEV chart
+  const nc = initChart('scNevChart');
+  if (nc) {
+    nc.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['NEV渗透率','充电需求指数'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:60,bottom:25,left:50},
+      xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:8,interval:5}},
+      yAxis:[{type:'value',name:'%',nameTextStyle:{color:'#60d040'},axisLabel:{color:'#60d040',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}},max:100},
+        {type:'value',name:'指数',nameTextStyle:{color:'#f08030'},axisLabel:{color:'#f08030',fontSize:9},splitLine:{show:false}}],
+      series:[
+        {name:'NEV渗透率',type:'line',data:nevData,smooth:true,lineStyle:{color:'#60d040',width:2.5},areaStyle:{color:'rgba(96,208,64,0.1)'},symbol:'none',markLine:{data:[{yAxis:50,name:'50%临界点',label:{color:'#f0a020'}}],lineStyle:{color:'#f0a020',type:'dashed'}}},
+        {name:'充电需求指数',type:'line',data:nevData.map(function(v,i){return (v*loadData[i]*1.5).toFixed(1);}),yAxisIndex:1,smooth:true,lineStyle:{color:'#f08030',width:1.5},symbol:'none'}
+      ]
+    });
+  }
+
+  // Load growth chart
+  const lc = initChart('scLoadChart');
+  if (lc) {
+    lc.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['负荷增长倍率','光伏衰减系数'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:60,bottom:25,left:50},
+      xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:8,interval:5}},
+      yAxis:[{type:'value',name:'倍率',nameTextStyle:{color:'#e04050'},axisLabel:{color:'#e04050',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+        {type:'value',name:'系数',nameTextStyle:{color:'#4090d0'},axisLabel:{color:'#4090d0',fontSize:9},splitLine:{show:false},max:1}],
+      series:[
+        {name:'负荷增长倍率',type:'line',data:loadData,smooth:true,lineStyle:{color:'#e04050',width:2},areaStyle:{color:'rgba(224,64,80,0.08)'},symbol:'none'},
+        {name:'光伏衰减系数',type:'line',data:years.map(function(_,i){return (Math.pow(0.98,i)*Math.pow(0.997,i)).toFixed(3);}),yAxisIndex:1,smooth:true,lineStyle:{color:'#4090d0',width:1.5},symbol:'none'}
+      ]
+    });
+  }
+
+  // PV vs EV energy evolution
+  const ec2 = initChart('scEneChart');
+  if (ec2) {
+    const basePV = (opt.annual_pv_gen_kwh || 1169380) / 10000;
+    const baseEV = (opt.annual_load_kwh || 4337449) / 10000 * 0.3;
+    ec2.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['光伏发电量','充电需求','净缺口'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:8,interval:5}},
+      yAxis:{type:'value',name:'万kWh/年',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:[
+        {name:'光伏发电量',type:'line',data:years.map(function(_,i){return (basePV*Math.pow(0.997,i)*Math.pow(0.98,Math.min(i,1))*Math.pow(0.99,i>1?i-1:0)).toFixed(0);}),smooth:true,lineStyle:{color:'#f0a020',width:2},areaStyle:{color:'rgba(240,160,32,0.08)'},symbol:'none'},
+        {name:'充电需求',type:'line',data:years.map(function(_,i){return (baseEV*nevData[i]/nevData[0]*loadData[i]).toFixed(0);}),smooth:true,lineStyle:{color:'#e04050',width:2},areaStyle:{color:'rgba(224,64,80,0.08)'},symbol:'none'},
+        {name:'净缺口',type:'line',data:years.map(function(_,i){var pv=basePV*Math.pow(0.997,i);var ev=baseEV*nevData[i]/nevData[0]*loadData[i];return (ev-pv).toFixed(0);}),smooth:true,lineStyle:{color:'#4090d0',width:1.5,type:'dashed'},symbol:'none'}
+      ]
+    });
+  }
+
+  // NPV scenarios
+  const npv = initChart('scNpvChart');
+  if (npv) {
+    const baseNPV = (opt.npc || 5376) * 0.3;
+    npv.setOption({
+      tooltip:{trigger:'axis'},legend:{data:['保守情景','基准情景','激进情景'],textStyle:{color:'#5a85a5',fontSize:9},top:5},
+      grid:{top:35,right:15,bottom:25,left:50},
+      xAxis:{type:'category',data:years,axisLabel:{color:'#5a85a5',fontSize:8,interval:5}},
+      yAxis:{type:'value',name:'万元',nameTextStyle:{color:'#40e0a0'},axisLabel:{color:'#40e0a0',fontSize:9},splitLine:{lineStyle:{color:'#1a3a5a'}}},
+      series:[
+        {name:'保守情景',type:'line',data:years.map(function(_,i){var r=0.07;return (baseNPV*(Math.pow(1+r,i)-1)/r).toFixed(0);}),smooth:true,lineStyle:{color:'#4090d0',width:2},symbol:'none'},
+        {name:'基准情景',type:'line',data:years.map(function(_,i){var r=0.10;return (baseNPV*(Math.pow(1+r,i)-1)/r).toFixed(0);}),smooth:true,lineStyle:{color:'#60d040',width:2},symbol:'none'},
+        {name:'激进情景',type:'line',data:years.map(function(_,i){var r=0.13;return (baseNPV*(Math.pow(1+r,i)-1)/r).toFixed(0);}),smooth:true,lineStyle:{color:'#e04050',width:2},symbol:'none'}
+      ]
+    });
+  }
+
+  document.getElementById('scSpecTable').innerHTML = `
+    <tr><th>模型</th><th>公式</th><th>参数</th><th>来源</th></tr>
+    <tr><td style="color:var(--accent2);">Bass扩散 (NEV)</td>
+      <td style="font-family:monospace;font-size:9px;">F(t) = (1-e^{-(p+q)t}) / (1+\\frac{q}{p}e^{-(p+q)t})</td>
+      <td>p=${bassP}, q=${bassQ}, K=${bassK}</td><td>文件21 §3, 公安部统计数据标定</td></tr>
+    <tr><td style="color:#f08030;">Logistic增长 (负荷)</td>
+      <td style="font-family:monospace;font-size:9px;">G(t) = 1 + (K-1)/(1+e^{-r(t-t0)})</td>
+      <td>r=${logisticR}, t0=${logisticT0}, K=${logisticK}</td><td>文件21 §5, 交通量增速回归</td></tr>
+    <tr><td style="color:#4090d0;">光伏衰减</td>
+      <td style="font-family:monospace;font-size:9px;">P_y = P_0 × 0.997^y × (1-0.02)^{\\mathbb{I}(y=1)}</td>
+      <td>首年2%, 年均0.3%</td><td>TOPCon组件规格书</td></tr>
+    <tr><td style="color:#e04050;">碳价预测</td>
+      <td style="font-family:monospace;font-size:9px;">CCER(t) = 70 × (1+g)^{t}</td>
+      <td>g=5% 年均增速</td><td>全国碳市场CEA价格趋势</td></tr>
+    <tr><td>预测周期</td><td colspan="2">2025-2065 (40年项目生命周期)</td><td>文件20 §4 LCCA</td></tr>
+  `;
+}
+
 // ============================ TAB ROUTER ============================
 const renderers = {
-  scada: renderSCADA, powerflow: renderPowerFlow,
+  scada: renderSCADA, 'charging-live': renderChargingLive, powerflow: renderPowerFlow,
   'pv-data': renderPVData, 'ess-data': renderESSData,
   'building-data': renderBuildingData, 'charging-data': renderChargingData,
+  topology: renderTopology,
   optimization: renderOptimization, 'opt-results': renderOptResults,
+  'v2g-dr': renderV2GDR, scenario: renderScenario,
   economic: renderEconomic, decision: renderDecision, recommend: renderRecommend,
 };
 
 function renderTab(tab) {
   disposeCharts(); stopSCADATimer();
+  if (_clTimer) { clearInterval(_clTimer); _clTimer = null; _clPlaying = false; }
   activeTab = tab;
   document.querySelectorAll('#nav a').forEach(a => a.classList.remove('active'));
   const link = document.querySelector(`#nav a[data-tab="${tab}"]`);
   if (link) link.classList.add('active');
   const titles = {
-    scada:'🏭 SCADA 细粒度监控', powerflow:'⚡ 分钟级功率流分析',
-    'pv-data':'☀️ 光伏发电数据看板', 'ess-data':'🔋 储能系统数据看板',
-    'building-data':'🏠 建筑负荷数据看板', 'charging-data':'🚗 充电站数据看板',
+    scada:'🏭 SCADA 细粒度监控', 'charging-live':'🚗 充电站实景仿真', powerflow:'⚡ 分钟级功率流分析',
+    'pv-data':'☀️ 光伏发电模型看板', 'ess-data':'🔋 储能系统模型看板',
+    'building-data':'🏠 建筑负荷模型看板', 'charging-data':'🔌 充电行为模型看板',
+    topology:'🔗 微网拓扑架构对比',
     optimization:'🎯 优化方法选择', 'opt-results':'📈 优化结果对比',
+    'v2g-dr':'🔄 V2G + 需求响应分析', scenario:'📅 场景演化分析',
     economic:'💰 经济分析', decision:'🎲 决策框架', recommend:'💡 分析建议'
   };
   document.getElementById('pageTitle').textContent = titles[tab] || tab;

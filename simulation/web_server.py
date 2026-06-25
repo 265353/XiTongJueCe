@@ -98,12 +98,22 @@ def _sanitize_nan(obj):
     return obj
 
 
+def _wait_sim_cache(timeout=30):
+    """等待后台仿真缓存就绪 (最多timeout秒)"""
+    import time
+    for _ in range(timeout * 2):
+        if _cache.get('_sim_cache_ready') and _sim_cache:
+            return True
+        time.sleep(0.5)
+    return bool(_sim_cache)
+
+
 def _build_sim_cache():
     """预计算MC和8760h序列, 避免每次API调用重复仿真"""
     print("Pre-computing simulation cache (MC + 8760h sequence)...")
     cal = CalendarContext(seed=SEED)
     mc_sim = MonteCarloChargingSimulator(service_area_size='medium', seed=SEED)
-    mc = mc_sim.simulate_all_scenarios(n_runs=200)  # 快速
+    mc = mc_sim.simulate_all_scenarios(n_runs=40)  # 快速启动, 足够P50/P95精度
     tmy = load_pvgis_tmy('wuhan')
     print(f"  TMY source: {tmy['source']}")
     opt = MicrogridOptimizer(size='medium', mc_scenarios=mc, seed=SEED, calendar_ctx=cal, tmy_data=tmy)
@@ -125,8 +135,11 @@ def _build_sim_cache():
     _sim_cache['pv_cap'] = pv_cap
     _sim_cache['ess_cap'] = ess_cap
     _sim_cache['ess_pow'] = ess_pow
+    _cache['_sim_cache_ready'] = True
     print(f"  OK: PV={pv_cap}kWp ESS={ess_cap}kWh/{ess_pow}kW")
 
+
+import threading
 
 @app.on_event("startup")
 def startup():
@@ -136,10 +149,16 @@ def startup():
     _cache['pareto'] = load_json('pareto_results.json')
     _cache['decision'] = load_json('decision_result.json')
     _cache['daily_8760h'] = load_json('daily_8760h.json')
-    try:
-        _build_sim_cache()
-    except Exception as e:
-        print(f"  WARN: Sim cache build failed: {e}")
+
+    # 懒初始化: 后台线程构建仿真缓存, 不阻塞HTTP服务
+    def _lazy_build_cache():
+        try:
+            _build_sim_cache()
+        except Exception as e:
+            print(f"  WARN: Sim cache build failed: {e}")
+
+    _cache['_sim_cache_ready'] = False
+    threading.Thread(target=_lazy_build_cache, daemon=True).start()
 
     # 初始化外部数据管理器
     try:
@@ -170,7 +189,8 @@ def health():
 
     return {
         "status": "ok",
-        "version": "7.0",
+        "version": "8.0",
+        "sim_cache_ready": _cache.get('_sim_cache_ready', False),
         "data_available": {
             "mc_summary": _cache['mc_summary'] is not None,
             "optimization": _cache['optimization'] is not None,
@@ -560,8 +580,8 @@ def simulate_dispatch_day(
 ):
     """仿真单日调度, 返回24h逐时数据 (使用预计算缓存, 秒级响应)"""
     # 使用预计算的8760h序列
-    if not _sim_cache:
-        return JSONResponse({"error": "Simulation cache not ready"}, status_code=503)
+    if not _wait_sim_cache(timeout=30):
+        return JSONResponse({"error": "Simulation cache not ready (still computing, retry in seconds)"}, status_code=503)
 
     pv_seq = _sim_cache['pv_seq']
     load_seq = _sim_cache['load_seq']
@@ -633,8 +653,8 @@ def simulate_year_summary(
     ess_pow: float = Query(1000),
 ):
     """仿真全年365天调度汇总 (使用预计算缓存)"""
-    if not _sim_cache:
-        return JSONResponse({"error": "Simulation cache not ready"}, status_code=503)
+    if not _wait_sim_cache(timeout=30):
+        return JSONResponse({"error": "Simulation cache not ready (still computing, retry in seconds)"}, status_code=503)
 
     pv_seq = _sim_cache['pv_seq']
     load_seq = _sim_cache['load_seq']
