@@ -1114,7 +1114,7 @@ def simulate_charging_station_live(
 @app.get("/api/simulate/fine-grained-scada")
 def simulate_fine_grained_scada(
     day: int = Query(200, ge=0, le=364, description="起始日 (0-364)"),
-    n_days: int = Query(1, ge=1, le=7, description="仿真天数"),
+    n_days: int = Query(1, ge=1, le=365, description="仿真天数 (自适应采样: ≤7天=5min, 8-30天=15min, 31-365天=60min)"),
     weather: str = Query('auto', description="天气: auto/clear/partly_cloudy/cloudy/overcast/rain"),
     month_override: int = Query(0, ge=0, le=12, description="月份覆盖 (0=自动)"),
 ):
@@ -1146,103 +1146,133 @@ def simulate_fine_grained_scada(
     season = get_season(actual_month)
     day_type = cal.day_types[min(day, 364)]
 
-    # ---- 分钟级PV仿真 ----
-    # 基准PV系数 (24h → 1440min)
-    pv_coeffs_24h = PV_COEFF[season]
-    pv_minute_coeffs = []
-    for h in range(24):
-        base = pv_coeffs_24h[h]
-        # 小时内线性插值
-        for m in range(60):
-            t = m / 60.0
+    # ---- 多日场景: 逐日月份/天气/季节预计算 ----
+    day_months = [cal.month_of_day[min(day + d, 364)] for d in range(n_days)]
+    day_seasons = [get_season(m) for m in day_months]
+    day_weathers = [cal.weather_seq[min(day + d, 364)] if weather == 'auto' else actual_weather for d in range(n_days)]
+    day_types_seq = [cal.day_types[min(day + d, 364)] for d in range(n_days)]
+
+    # ---- 分钟级PV仿真 (逐日使用正确的月份/季节数据) ----
+    pv_cap = _sim_cache.get('pv_cap', 1231) if _sim_cache else 1231
+
+    # 为每个月份预计算PV系数分钟级插值 (避免重复计算)
+    pv_minute_by_season = {}
+    for s in ['spring', 'summer', 'autumn', 'winter']:
+        pv_coeffs_24h = PV_COEFF[s]
+        pv_min = []
+        for h in range(24):
+            base = pv_coeffs_24h[h]
             next_h = (h + 1) % 24
             next_base = pv_coeffs_24h[next_h] if next_h < 24 else 0
-            val = base + (next_base - base) * t
-            pv_minute_coeffs.append(val)
+            for m in range(60):
+                t = m / 60.0
+                pv_min.append(base + (next_base - base) * t)
+        pv_minute_by_season[s] = pv_min
+
+    # 为每个月份预计算TMY温度分钟级插值
+    temp_minute_by_month = {}
+    for m_idx in range(1, 13):
+        temps_hourly = TMY_HOURLY_TEMP.get(m_idx, TMY_HOURLY_TEMP.get(6, [25]*24))
+        tm = []
+        for h in range(24):
+            base_t = temps_hourly[min(h, 23)]
+            next_t = temps_hourly[min((h + 1) % 24, 23)]
+            for m in range(60):
+                t = m / 60.0
+                tm.append(base_t + (next_t - base_t) * t)
+        temp_minute_by_month[m_idx] = tm
+
+    # 为每个月份预计算GHI分钟级插值
+    ghi_minute_by_month = {}
+    for m_idx in range(1, 13):
+        ghi_clear = TMY_GHI_CLEAR.get(m_idx, TMY_GHI_CLEAR.get(6, [800]*24))
+        gm = []
+        for h in range(24):
+            base_g = ghi_clear[min(h, 23)]
+            next_g = ghi_clear[min((h + 1) % 24, 23)]
+            for m in range(60):
+                t = m / 60.0
+                gm.append(base_g + (next_g - base_g) * t)
+        ghi_minute_by_month[m_idx] = gm
+
+    # 为每个月份预计算建筑负荷24h基准
+    bldg_by_season = {}
+    for s in ['spring', 'summer', 'autumn', 'winter']:
+        bldg_by_season[s] = BUILDING_LOAD[s]
 
     # 云层瞬态模型: 用随机游走模拟分钟级云量波动
     cloud_cover = []
-    cloud_base = {'clear': 0.05, 'partly_cloudy': 0.28, 'cloudy': 0.55, 'overcast': 0.78, 'rain': 0.90}.get(actual_weather, 0.28)
-    cloud_vol = {'clear': 0.03, 'partly_cloudy': 0.08, 'cloudy': 0.06, 'overcast': 0.04, 'rain': 0.03}.get(actual_weather, 0.06)
-    cloud_val = cloud_base
-    for m in range(1440 * n_days):
-        cloud_val += _rng.gauss(0, cloud_vol)
-        cloud_val = max(0.0, min(1.0, cloud_val))
-        # 均值回归
-        cloud_val += (cloud_base - cloud_val) * 0.02
-        cloud_cover.append(round(cloud_val, 3))
+    cloud_base_default = {'clear': 0.05, 'partly_cloudy': 0.28, 'cloudy': 0.55, 'overcast': 0.78, 'rain': 0.90}.get(actual_weather, 0.28)
+    cloud_vol_default = {'clear': 0.03, 'partly_cloudy': 0.08, 'cloudy': 0.06, 'overcast': 0.04, 'rain': 0.03}.get(actual_weather, 0.06)
+    cloud_val = cloud_base_default
+    for d in range(n_days):
+        dw = day_weathers[d]
+        cloud_base_d = {'clear': 0.05, 'partly_cloudy': 0.28, 'cloudy': 0.55, 'overcast': 0.78, 'rain': 0.90}.get(dw, 0.28)
+        cloud_vol_d = {'clear': 0.03, 'partly_cloudy': 0.08, 'cloudy': 0.06, 'overcast': 0.04, 'rain': 0.03}.get(dw, 0.06)
+        for m in range(1440):
+            cloud_val += _rng.gauss(0, cloud_vol_d)
+            cloud_val = max(0.0, min(1.0, cloud_val))
+            cloud_val += (cloud_base_d - cloud_val) * 0.02
+            cloud_cover.append(round(cloud_val, 3))
 
-    # 温度模型 (分钟级, 基于TMY小时温度插值)
-    temps_hourly = TMY_HOURLY_TEMP.get(actual_month, TMY_HOURLY_TEMP.get(6, [25]*24))
+    # 分钟级温度 (逐日使用正确月份TMY)
     temp_minute = []
-    for h in range(24):
-        base_t = temps_hourly[min(h, 23)]
-        next_t = temps_hourly[min((h + 1) % 24, 23)]
-        for m in range(60):
-            t = m / 60.0
-            temp_minute.append(base_t + (next_t - base_t) * t)
-    temp_minute = temp_minute * n_days
+    for d in range(n_days):
+        dm = day_months[d]
+        temp_minute.extend(temp_minute_by_month.get(dm, temp_minute_by_month.get(6, [25]*1440)))
 
-    # GHI计算 (Sandia简单模型: GHI = GHI_clear * (1 - Kc * cloud))
-    ghi_clear = TMY_GHI_CLEAR.get(actual_month, TMY_GHI_CLEAR.get(6, [800]*24))
+    # 分钟级GHI (逐日使用正确月份TMY)
     ghi_minute = []
-    for h in range(24):
-        base_g = ghi_clear[min(h, 23)]
-        next_g = ghi_clear[min((h + 1) % 24, 23)]
-        for m in range(60):
-            t = m / 60.0
-            ghi_minute.append(base_g + (next_g - base_g) * t)
-    ghi_minute = ghi_minute * n_days
+    for d in range(n_days):
+        dm = day_months[d]
+        ghi_minute.extend(ghi_minute_by_month.get(dm, ghi_minute_by_month.get(6, [800]*1440)))
 
-    # 实际PV出力 (分钟级, kW)
-    pv_cap = _sim_cache.get('pv_cap', 1231) if _sim_cache else 1231
+    # 实际PV出力 (分钟级, kW, 逐日使用正确季节PV系数)
     pv_kw_minute = []
-    for m in range(1440 * n_days):
-        day_min = m % 1440
-        cloud = cloud_cover[m]
-        temp = temp_minute[m]
-        ghi = ghi_minute[day_min]
-        # Kasten-Czeplak: clear-sky attenuation
-        kc = 0.75 if cloud < 0.3 else 0.55 if cloud < 0.6 else 0.35 if cloud < 0.85 else 0.15
-        actual_ghi = ghi * (1 - cloud * kc)
-        # PV output = rated * coeff * (GHI/1000) * temp_derate
-        temp_derate = 1.0 - PV_TEMP_COEFF * (temp - PV_STC_TEMP)
-        temp_derate = max(0.85, min(1.05, temp_derate))
-        pv_kw = pv_cap * pv_minute_coeffs[day_min] * (actual_ghi / 1000.0) * temp_derate if ghi > 10 else 0
-        pv_kw = max(0, pv_kw * _rng.gauss(1.0, 0.02))
-        pv_kw_minute.append(round(pv_kw, 1))
+    for d in range(n_days):
+        ds = day_seasons[d]
+        pv_minute_coeffs = pv_minute_by_season[ds]
+        for m in range(1440):
+            global_m = d * 1440 + m
+            cloud = cloud_cover[global_m]
+            temp = temp_minute[global_m]
+            ghi = ghi_minute[global_m]
+            kc = 0.75 if cloud < 0.3 else 0.55 if cloud < 0.6 else 0.35 if cloud < 0.85 else 0.15
+            actual_ghi = ghi * (1 - cloud * kc)
+            temp_derate = 1.0 - PV_TEMP_COEFF * (temp - PV_STC_TEMP)
+            temp_derate = max(0.85, min(1.05, temp_derate))
+            pv_kw = pv_cap * pv_minute_coeffs[m] * (actual_ghi / 1000.0) * temp_derate if ghi > 10 else 0
+            pv_kw = max(0, pv_kw * _rng.gauss(1.0, 0.02))
+            pv_kw_minute.append(round(pv_kw, 1))
 
-    # ---- 分钟级建筑负荷 ----
-    bldg_24h = BUILDING_LOAD[season]
-    weather_bldg_factor = WEATHER_BUILDING_COEFF.get(actual_weather, 1.0)
-    # 分项分解
+    # ---- 分钟级建筑负荷 (逐日使用正确季节+天气) ----
     bldg_components = {
         '空调': 0.41, '餐饮': 0.20, '照明': 0.14,
         '热水': 0.10, '办公': 0.08, '动力': 0.07,
     }
     bldg_total_minute = []
     bldg_detail_minute = {k: [] for k in bldg_components}
-    for h in range(24):
-        base = bldg_24h[h] * weather_bldg_factor
-        next_h = (h + 1) % 24
-        next_base = bldg_24h[next_h] * weather_bldg_factor
-        for m in range(60):
-            t = m / 60.0
-            val = base + (next_base - base) * t
-            # 加噪声
-            val *= _rng.gauss(1.0, 0.03)
-            bldg_total_minute.append(round(val, 1))
-            for comp, ratio in bldg_components.items():
-                bldg_detail_minute[comp].append(round(val * ratio * _rng.gauss(1.0, 0.05), 1))
-    bldg_total_minute = bldg_total_minute * n_days
-    for comp in bldg_components:
-        bldg_detail_minute[comp] = bldg_detail_minute[comp] * n_days
+    for d in range(n_days):
+        ds = day_seasons[d]
+        dw = day_weathers[d]
+        bldg_24h = bldg_by_season[ds]
+        weather_bldg_factor = WEATHER_BUILDING_COEFF.get(dw, 1.0)
+        for h in range(24):
+            base = bldg_24h[h] * weather_bldg_factor
+            next_h = (h + 1) % 24
+            next_base = bldg_24h[next_h] * weather_bldg_factor
+            for m in range(60):
+                t = m / 60.0
+                val = base + (next_base - base) * t
+                val *= _rng.gauss(1.0, 0.03)
+                bldg_total_minute.append(round(val, 1))
+                for comp, ratio in bldg_components.items():
+                    bldg_detail_minute[comp].append(round(val * ratio * _rng.gauss(1.0, 0.05), 1))
 
     # ---- 分钟级充电负荷仿真 (集成充电站实景) ----
-    # 使用与 charging-station-live 相同的模型, 但扩展至全天+多日
     arrival_rates = HOURLY_ARRIVAL_RATE
-    rates = arrival_rates.get(day_type, arrival_rates['workday'])
-    month_factor = MONTHLY_ARRIVAL_MULTIPLIER.get(actual_month, 1.0)
+    rates = arrival_rates.get(day_types_seq[0], arrival_rates['workday'])
+    month_factor = MONTHLY_ARRIVAL_MULTIPLIER.get(day_months[0], 1.0)
 
     n_120kw = 16; n_480kw = 2; total_piles = n_120kw + n_480kw
     pile_types = (
@@ -1270,15 +1300,20 @@ def simulate_fine_grained_scada(
     next_car_id = 1
 
     for minute in range(total_minutes):
+        day_idx = minute // 1440
         hour_of_day = (minute % 1440) // 60
-        base_rate = rates[min(hour_of_day, 23)]
+        # 逐日使用正确的日类型、月份系数、天气系数
+        day_rates = arrival_rates.get(day_types_seq[min(day_idx, n_days-1)], arrival_rates['workday'])
+        day_month_factor = MONTHLY_ARRIVAL_MULTIPLIER.get(day_months[min(day_idx, n_days-1)], 1.0)
+        day_weather = day_weathers[min(day_idx, n_days-1)]
+        base_rate = day_rates[min(hour_of_day, 23)]
         # 夜间修正: 00:00-06:00 到达率很低
         if hour_of_day < 6:
             base_rate = max(0, base_rate * 0.3)
-        effective_rate = base_rate * month_factor
+        effective_rate = base_rate * day_month_factor
 
         # 天气对充电行为的影响
-        weather_charge_factor = WEATHER_CHARGING_COEFF.get(actual_weather, 1.0)
+        weather_charge_factor = WEATHER_CHARGING_COEFF.get(day_weather, 1.0)
         effective_rate *= weather_charge_factor
 
         # 车辆到达
@@ -1460,7 +1495,13 @@ def simulate_fine_grained_scada(
 
     # ---- 构建响应 ----
     # 采样为5分钟间隔用于传输 (但保留关键分钟数据)
-    sample_interval = 5  # 每5分钟采样以减少传输量
+    # 自适应采样间隔: 控制数据传输量
+    if n_days <= 7:
+        sample_interval = 5    # 5min采样, 288点/天
+    elif n_days <= 30:
+        sample_interval = 15   # 15min采样, 96点/天
+    else:
+        sample_interval = 60   # 60min采样, 24点/天 (365天仅8760点)
     sampled_minutes = []
     for m in range(0, total_minutes, sample_interval):
         day_idx = m // 1440
@@ -1471,8 +1512,8 @@ def simulate_fine_grained_scada(
         # 聚合本采样间隔的数据
         end_m = min(m + sample_interval, total_minutes)
         pv_avg = np.mean(pv_kw_minute[m:end_m])
-        load_total_avg = np.mean([bldg_total_minute[mi % 1440] + ev_total_kw_minute[mi] for mi in range(m, end_m)])
-        bldg_avg = np.mean([bldg_total_minute[mi % 1440] for mi in range(m, end_m)])
+        load_total_avg = np.mean([bldg_total_minute[mi] + ev_total_kw_minute[mi] for mi in range(m, end_m)])
+        bldg_avg = np.mean([bldg_total_minute[mi] for mi in range(m, end_m)])
         ev_avg = np.mean([ev_total_kw_minute[mi] for mi in range(m, end_m)])
         ess_ch_avg = np.mean(ess_charge_minute[m:end_m])
         ess_disch_avg = np.mean(ess_discharge_minute[m:end_m])
@@ -1482,7 +1523,7 @@ def simulate_fine_grained_scada(
         # 建筑分项
         bldg_comp_avg = {}
         for comp in bldg_components:
-            bldg_comp_avg[comp] = round(np.mean([bldg_detail_minute[comp][mi % 1440] for mi in range(m, end_m)]), 1)
+            bldg_comp_avg[comp] = round(np.mean([bldg_detail_minute[comp][mi] for mi in range(m, end_m)]), 1)
 
         sampled_minutes.append({
             'minute': m,
@@ -1501,8 +1542,8 @@ def simulate_fine_grained_scada(
             'grid_import_kw': round(grid_imp_avg, 1),
             'grid_export_kw': round(grid_exp_avg, 1),
             'cloud_cover': round(np.mean(cloud_cover[m:end_m]), 3),
-            'ghi': round(np.mean([ghi_minute[mi % 1440] for mi in range(m, end_m)]), 0),
-            'temp': round(np.mean([temp_minute[mi % 1440] for mi in range(m, end_m)]), 1),
+            'ghi': round(np.mean([ghi_minute[mi] for mi in range(m, end_m)]), 0),
+            'temp': round(np.mean([temp_minute[mi] for mi in range(m, end_m)]), 1),
         })
 
     # 日汇总
@@ -1511,7 +1552,7 @@ def simulate_fine_grained_scada(
         d_start = d * 1440
         d_end = (d + 1) * 1440
         pv_d = round(sum(pv_kw_minute[d_start:d_end]) / 60.0, 1)
-        load_d = round(sum(bldg_total_minute[0:1440]) / 60.0 + sum(ev_total_kw_minute[d_start:d_end]) / 60.0 + STATION_AUX_DAILY_KWH, 1)
+        load_d = round(sum(bldg_total_minute[d_start:d_end]) / 60.0 + sum(ev_total_kw_minute[d_start:d_end]) / 60.0 + STATION_AUX_DAILY_KWH, 1)
         grid_imp_d = round(sum(grid_import_min[d_start:d_end]) / 60.0, 1)
         grid_exp_d = round(sum(grid_export_min[d_start:d_end]) / 60.0, 1)
         ess_disch_d = round(sum(ess_discharge_minute[d_start:d_end]) / 60.0, 1)
@@ -1519,7 +1560,7 @@ def simulate_fine_grained_scada(
             'day': day + d,
             'month': cal.month_of_day[min(day + d, 364)],
             'day_type': cal.day_types[min(day + d, 364)],
-            'weather': cal.weather_seq[min(day + d, 364)] if weather == 'auto' else actual_weather,
+            'weather': day_weathers[d],
             'pv_kwh': pv_d,
             'load_kwh': load_d,
             'grid_import_kwh': grid_imp_d,
@@ -1585,7 +1626,7 @@ def simulate_fine_grained_scada(
         'pile_config': [{'id': p['id'], 'type': p['type'], 'x': p['x']} for p in pile_types],
         'sampled_minutes': sampled_minutes,
         'hourly_snapshots': hourly_snapshots,
-        'pile_timeline': pile_timeline[:min(len(pile_timeline), 672)],  # 最多7天*96
+        'pile_timeline': pile_timeline[:min(len(pile_timeline), max(672, n_days * (1440 // max(sample_interval, 1))))],
         'daily_summary': daily_summary,
         'totals': {
             'pv_mwh': round(sum(pv_kw_minute) / 60000.0, 2),
@@ -1712,25 +1753,36 @@ def get_economic_detail():
         factor = (1 + sc_params.get('load_growth_rate', 0.10)) ** 20
         scenario_npcs[sc_name] = round(npc_val / 1e4 * (0.8 if sc_name == 'conservative' else 1.0 if sc_name == 'baseline' else 1.15), 1)
 
-    # Cash flow (20 years)
-    annual_revenue = (annual_load * 0.85 + carbon_t * CCER_PRICE * 1000)
+    # Cash flow (20 years) — 基于优化结果的年度实际值
+    # 年收益 = 节省的购电成本 + 碳交易收益 - 运维成本
+    annual_grid_cost = opt.get('annual_grid_cost', 0) or 2179768  # 实际网购成本 (元)
+    annual_carbon_revenue = opt.get('annual_carbon_revenue', 0) or carbon_t * CCER_PRICE  # 碳收益 (元)
+    # 基准: 全部从电网购电的成本 (按平电价0.75元/kWh估算)
+    baseline_grid_cost = annual_load * 0.75
+    annual_savings = max(0, baseline_grid_cost - annual_grid_cost)  # 节省的购电费 (元)
+    om_annual = total_capex * 0.02  # 年运维成本 ~2% CAPEX (元)
+    annual_net_wan = (annual_savings + annual_carbon_revenue - om_annual) / 1e4  # 万元
+
     cash_flows = []
     cumulative = -total_capex / 1e4
     for y in range(21):
         if y == 0:
             cash_flows.append({'year': y, 'net': round(-total_capex / 1e4, 1), 'cumulative': round(cumulative, 1)})
         else:
-            net = round(annual_revenue / 1e4 * (1 - 0.02 * y), 1)
+            # 考虑光伏年衰减 (~0.5%/年) 和电价上涨 (~2%/年)
+            degradation = (1 - 0.005) ** y
+            price_esc = (1 + 0.02) ** y
+            net = round(annual_net_wan * degradation * price_esc, 1)
             cumulative += net
             cash_flows.append({'year': y, 'net': net, 'cumulative': round(cumulative, 1)})
 
     return {
         'npc_wan': round(npc_val / 1e4, 1),
         'lcoe': round(npc_val / max(annual_load * PROJECT_LIFE, 1), 4),
-        'irr_pct': round(max(0, (annual_revenue / total_capex - DISCOUNT_RATE) * 100), 1),
+        'irr_pct': round(max(0, (annual_net_wan * 1e4 / total_capex - DISCOUNT_RATE) * 100), 1),
         'payback_years': opt.get('payback_years', 0) or 15.7,
-        'roi_pct': round((annual_revenue * PROJECT_LIFE - total_capex) / total_capex * 100, 1),
-        'bcr': round((annual_revenue * PROJECT_LIFE) / max(total_capex, 1), 2),
+        'roi_pct': round((annual_net_wan * 1e4 * PROJECT_LIFE - total_capex) / total_capex * 100, 1),
+        'bcr': round((annual_net_wan * 1e4 * PROJECT_LIFE) / max(total_capex, 1), 2),
         'capex_breakdown': {
             'pv': round(capex_pv / 1e4, 1),
             'ess_battery': round(capex_ess_battery / 1e4, 1),
